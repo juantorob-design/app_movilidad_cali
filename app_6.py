@@ -671,14 +671,6 @@ def importar_base_historica():
         guardar_local_json(st.session_state.db_expedientes)
     return importados, duplicados, len(registros)
 
-# --- DETECTOR DE SESIÓN AUTOMÁTICA ---
-if not st.session_state.get("logged_in", False) and os.path.exists(TOKEN_FILE):
-    creds_auto = get_google_credentials()
-    if creds_auto:
-        email_auto = obtener_email_google(creds_auto)
-        st.session_state.logged_user = email_auto
-        st.session_state.logged_in = True
-
 # --- INICIALIZACIÓN ---
 drive_service = get_drive_service()
 sheets_service = get_sheets_service()
@@ -694,6 +686,19 @@ if 'logged_in' not in st.session_state:
 
 if 'navegacion' not in st.session_state:
     st.session_state.navegacion = "Inicio"
+
+# Restaurar automáticamente solo una cuenta de Google ya aprobada.
+if not st.session_state.get("logged_in", False) and os.path.exists(TOKEN_FILE):
+    creds_auto = get_google_credentials()
+    if creds_auto:
+        email_auto = obtener_email_google(creds_auto)
+        usuario_auto = st.session_state.usuarios.get(email_auto) if email_auto else None
+        if usuario_auto and (
+            usuario_auto.get("estado") == "Activo"
+            and usuario_auto.get("rol") != "Sin Rol Asignado"
+        ):
+            st.session_state.logged_user = email_auto
+            st.session_state.logged_in = True
 
 nav_param = st.query_params.get("nav")
 if nav_param in {
@@ -793,8 +798,28 @@ def cuenta_activa(usuario):
     if not usuario:
         return False
     if usuario.get("rol") == "Super Administrador":
-        return True
-    return usuario.get("estado") == "Activo"
+        return usuario.get("estado", "Activo") == "Activo"
+    return usuario.get("estado") == "Activo" and usuario.get("rol") != "Sin Rol Asignado"
+
+
+def cuenta_bloqueada(usuario):
+    return bool(usuario) and usuario.get("estado") == "Inactivo"
+
+
+def opciones_autorizadas(rol):
+    permisos = {
+        "Visualizador": {"Inicio", "Consulta & Archivo", "Mi Perfil"},
+        "Modificador": {"Inicio", "Entrada de Expedientes", "Consulta & Archivo", "Mi Perfil"},
+        "Administrador": {
+            "Inicio", "Entrada de Expedientes", "Consulta & Archivo",
+            "Base Histórica", "Gestión de Permisos", "Mi Perfil",
+        },
+        "Super Administrador": {
+            "Inicio", "Entrada de Expedientes", "Consulta & Archivo",
+            "Base Histórica", "Gestión de Permisos", "Mi Perfil",
+        },
+    }
+    return permisos.get(rol, {"Inicio", "Mi Perfil"})
 
 # --- FUNCIÓN DE RENDERIZADO ESTILO MENÚ DE WINDOWS ---
 def render_win_app(col, img_path, titulo, destino_nav, key_prefix):
@@ -971,7 +996,10 @@ if not datos_usuario:
         guardar_local_json(st.session_state.db_expedientes)
 
 if not cuenta_activa(datos_usuario):
-    st.warning("Su cuenta aún no está activa. Un administrador debe autorizarla.")
+    if cuenta_bloqueada(datos_usuario):
+        st.error("Esta cuenta está bloqueada. Comuníquese con un administrador.")
+    else:
+        st.warning("Su cuenta está pendiente de aprobación. Un administrador debe asignarle un rol y activarla.")
     if st.button("Volver al inicio de sesión"):
         cerrar_sesion()
     st.stop()
@@ -982,11 +1010,16 @@ estado_actual = datos_usuario.get("estado", "Pendiente")
 es_admin = rol_actual in ["Super Administrador", "Administrador"]
 es_modificador = rol_actual in ["Super Administrador", "Administrador", "Modificador"]
 
-opciones_menu = ["Inicio", "Entrada de Expedientes", "Consulta & Archivo", "Google Drive", "Hoja Google Sheets"]
-if es_admin:
-    opciones_menu.append("Base Histórica")
-    opciones_menu.append("Gestión de Permisos")
-opciones_menu.append("Mi Perfil")
+opciones_permitidas = opciones_autorizadas(rol_actual)
+if st.session_state.navegacion not in opciones_permitidas:
+    st.session_state.navegacion = "Inicio"
+opciones_menu = [
+    opcion for opcion in [
+        "Inicio", "Entrada de Expedientes", "Consulta & Archivo",
+        "Base Histórica", "Gestión de Permisos", "Mi Perfil",
+    ]
+    if opcion in opciones_permitidas
+]
 
 # --- NAVEGACIÓN LATERAL ---
 with st.sidebar:
@@ -1025,20 +1058,26 @@ if st.session_state.navegacion == "Inicio":
     st.markdown('<div class="launcher-title">Aplicaciones del sistema</div>', unsafe_allow_html=True)
     c1, c2, c3, c4, c5, c6 = st.columns(6)
 
-    render_win_app(c1, IMG_CARD_REGISTRO, "Registro de Entrada", "Entrada de Expedientes", "reg")
-    render_win_app(c2, IMG_CARD_BUSCADOR, "Buscador & Archivo", "Consulta & Archivo", "bus")
-    with c3:
-        render_image_action(
-            IMG_CARD_DRIVE,
-            "Google Drive",
-            f"sistema://open?url={quote(f'https://drive.google.com/drive/folders/{DRIVE_FOLDER_ID}', safe='')}&title=Google%20Drive",
-        )
-    with c4:
-        render_image_action(
-            IMG_CARD_SHEETS,
-            "Google Sheets",
-            f"sistema://open?url={quote(SHEET_URL, safe='')}&title=Google%20Sheets",
-        )
+    columnas = []
+    if "Entrada de Expedientes" in opciones_permitidas:
+        columnas.append((c1, IMG_CARD_REGISTRO, "Registro de Entrada", "Entrada de Expedientes", "reg"))
+    if "Consulta & Archivo" in opciones_permitidas:
+        columnas.append((c2, IMG_CARD_BUSCADOR, "Buscador & Archivo", "Consulta & Archivo", "bus"))
+    for col, imagen, titulo, destino, clave in columnas:
+        render_win_app(col, imagen, titulo, destino, clave)
+    if "Consulta & Archivo" in opciones_permitidas:
+        with c3:
+            render_image_action(
+                IMG_CARD_DRIVE,
+                "Google Drive",
+                f"sistema://open?url={quote(f'https://drive.google.com/drive/folders/{DRIVE_FOLDER_ID}', safe='')}&title=Google%20Drive",
+            )
+        with c4:
+            render_image_action(
+                IMG_CARD_SHEETS,
+                "Google Sheets",
+                f"sistema://open?url={quote(SHEET_URL, safe='')}&title=Google%20Sheets",
+            )
     if es_admin:
         render_win_app(c5, IMG_CARD_PERMISOS, "Gestión Permisos", "Gestión de Permisos", "prm")
     else:
