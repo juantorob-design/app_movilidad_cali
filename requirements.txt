@@ -1,0 +1,16 @@
+﻿streamlit>=1.57.0
+pandas>=2.0.0
+openpyxl>=3.1.2
+google-api-python-client>=2.100.0
+google-auth-httplib2>=0.2.0
+google-auth-oauthlib>=1.2.0
+google-auth>=2.25.0
+pywebview>=4.4.0
+PySide6>=6.7.0
+PySide6-Addons>=6.7.0
+pythonnet>=3.0.1
+pyinstaller>=6.3.0
+requests>=2.31.0
+urllib3>=2.0.0
+certifi>=2023.11.17
+python-dotenv>=1.0.0

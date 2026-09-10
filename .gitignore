@@ -1,0 +1,15 @@
+venv/
+build/
+dist/
+__pycache__/
+*.pyc
+token.json
+credentials.json
+database_local.json
+compilacion_log.txt
+.streamlit/secrets.toml
+# Artefactos locales del instalador y registros de compilación
+update_temp.exe
+update_installer.bat
+desktop.ini
+*.lnk
