@@ -19,8 +19,12 @@ Para usar el escritorio integrado:
 
 ## Compilación para Windows
 
-Ejecuta `build_app.ps1`. El instalador portable se genera en
-`dist/SistemaDesvinculaciones/`.
+Ejecuta `build_app.ps1` para generar el ejecutable. Después compila
+`installer.iss` con Inno Setup para crear el instalador de Windows.
+
+Las actualizaciones publicadas se consultan mediante `version.json` y se aplican
+ejecutando el instalador de la nueva versión, sin reemplazar archivos mientras
+la aplicación está abierta.
 
 ## Datos y credenciales
 
