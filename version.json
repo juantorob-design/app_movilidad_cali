@@ -1,5 +1,5 @@
 {
-  "version": "1.0.2",
-  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.0.2/SistemaDesvinculaciones-Setup-1.0.2.exe",
-  "changelog": "Aprobación obligatoria de usuarios y control de acceso por roles."
+  "version": "1.0.3",
+  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.0.3/SistemaDesvinculaciones-Setup-1.0.3.exe",
+  "changelog": "Permisos reforzados para visualizadores, modificadores y administradores."
 }

@@ -6,7 +6,7 @@ import threading
 import tempfile
 
 # Versión actual de la aplicación instalada
-CURRENT_VERSION = "1.0.2"
+CURRENT_VERSION = "1.0.3"
 
 # GitHub Raw será la fuente pública de versiones cuando el repositorio se publique.
 DEFAULT_VERSION_CHECK_URL = (

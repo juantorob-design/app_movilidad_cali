@@ -452,6 +452,17 @@ def descargar_archivo_drive(service, file_id):
         _, terminado = downloader.next_chunk()
     return buffer.getvalue()
 
+
+def mostrar_documento_en_aplicacion(contenido, nombre):
+    """Muestra un documento sin abrir Drive ni exponer controles de descarga al visualizador."""
+    extension = os.path.splitext(nombre)[1].lower()
+    if extension == ".pdf":
+        st.pdf(contenido)
+    elif extension in {".png", ".jpg", ".jpeg"}:
+        st.image(contenido, caption=nombre, width="stretch")
+    else:
+        st.info("Este tipo de archivo no tiene vista previa integrada.")
+
 def obtener_rango_primera_hoja(service, columnas="A:Z"):
     metadata = service.spreadsheets().get(
         spreadsheetId=SPREADSHEET_ID,
@@ -812,7 +823,7 @@ def opciones_autorizadas(rol):
         "Modificador": {"Inicio", "Entrada de Expedientes", "Consulta & Archivo", "Mi Perfil"},
         "Administrador": {
             "Inicio", "Entrada de Expedientes", "Consulta & Archivo",
-            "Base Histórica", "Gestión de Permisos", "Mi Perfil",
+            "Base Histórica", "Mi Perfil",
         },
         "Super Administrador": {
             "Inicio", "Entrada de Expedientes", "Consulta & Archivo",
@@ -1009,6 +1020,8 @@ estado_actual = datos_usuario.get("estado", "Pendiente")
 
 es_admin = rol_actual in ["Super Administrador", "Administrador"]
 es_modificador = rol_actual in ["Super Administrador", "Administrador", "Modificador"]
+es_super_admin = rol_actual == "Super Administrador"
+puede_abrir_google = es_modificador
 
 opciones_permitidas = opciones_autorizadas(rol_actual)
 if st.session_state.navegacion not in opciones_permitidas:
@@ -1065,7 +1078,7 @@ if st.session_state.navegacion == "Inicio":
         columnas.append((c2, IMG_CARD_BUSCADOR, "Buscador & Archivo", "Consulta & Archivo", "bus"))
     for col, imagen, titulo, destino, clave in columnas:
         render_win_app(col, imagen, titulo, destino, clave)
-    if "Consulta & Archivo" in opciones_permitidas:
+    if puede_abrir_google:
         with c3:
             render_image_action(
                 IMG_CARD_DRIVE,
@@ -1078,7 +1091,7 @@ if st.session_state.navegacion == "Inicio":
                 "Google Sheets",
                 f"sistema://open?url={quote(SHEET_URL, safe='')}&title=Google%20Sheets",
             )
-    if es_admin:
+    if es_super_admin:
         render_win_app(c5, IMG_CARD_PERMISOS, "Gestión Permisos", "Gestión de Permisos", "prm")
     else:
         render_win_app(c5, IMG_CARD_PERFIL, "Mi Perfil", "Mi Perfil", "prf_user")
@@ -1267,17 +1280,22 @@ elif st.session_state.navegacion == "Consulta & Archivo":
             st.info("Este expediente no posee archivos adjuntos registrados localmente.")
         else:
             for p in paginas:
-                cp1, cp2, cp3, cp4 = st.columns([3, 1.5, 1.5, 1])
+                cp1, cp2, cp3 = st.columns([3, 1.5, 1.5])
                 cp1.write(f"Página {p['pagina_id']}: {p['nombre']} ({p['tamano']})")
-                if p.get("drive_url"):
-                    if cp2.button("Ver", key=f"view_drive_{exp['radicado_padre']}_{p['pagina_id']}"):
-                        abrir_en_navegador(p["drive_url"], "Documento de Google Drive")
-                    if p.get("drive_id") and drive_service:
+                if p.get("drive_id") and drive_service:
+                    if cp2.button("Ver documento", key=f"view_drive_{exp['radicado_padre']}_{p['pagina_id']}"):
                         try:
                             contenido = descargar_archivo_drive(drive_service, p["drive_id"])
+                            with st.expander(f"Vista previa: {p['nombre']}", expanded=True):
+                                mostrar_documento_en_aplicacion(contenido, p["nombre"])
+                        except Exception as error:
+                            st.error(f"No fue posible mostrar el documento: {error}")
+                    if es_modificador:
+                        try:
+                            contenido_descarga = descargar_archivo_drive(drive_service, p["drive_id"])
                             cp3.download_button(
-                                "Descargar PDF",
-                                data=contenido,
+                                "Descargar",
+                                data=contenido_descarga,
                                 file_name=p["nombre"],
                                 mime="application/pdf",
                                 key=f"download_drive_{exp['radicado_padre']}_{p['pagina_id']}",
@@ -1285,15 +1303,16 @@ elif st.session_state.navegacion == "Consulta & Archivo":
                         except Exception as error:
                             cp3.error(f"No disponible: {error}")
                 else:
-                    cp2.caption("Solo local")
+                    cp2.caption("Sin vista previa disponible")
 
-                with cp4:
-                    if es_modificador:
-                        if st.button("Eliminar", key=f"del_{exp['radicado_padre']}_{p['pagina_id']}"):
-                            exp["canvas_paginas"].remove(p)
-                            guardar_local_json(st.session_state.db_expedientes)
-                            st.success(f"Página {p['pagina_id']} eliminada.")
-                            st.rerun()
+                if es_modificador and st.button(
+                    "Eliminar",
+                    key=f"del_{exp['radicado_padre']}_{p['pagina_id']}",
+                ):
+                    exp["canvas_paginas"].remove(p)
+                    guardar_local_json(st.session_state.db_expedientes)
+                    st.success(f"Página {p['pagina_id']} eliminada.")
+                    st.rerun()
     elif len(coincidencias) > 1:
         st.info(f"Se encontraron {len(coincidencias)} expedientes.")
         st.dataframe(
@@ -1311,20 +1330,37 @@ elif st.session_state.navegacion == "Consulta & Archivo":
                     st.caption("Este proceso no tiene documentos registrados.")
                     continue
                 for p in paginas:
-                    col_info, col_download = st.columns([4, 1])
+                    col_info, col_view, col_download = st.columns([3, 1, 1])
                     col_info.write(f"{p.get('nombre', 'Documento')} ({p.get('tamano', '')})")
                     if p.get("drive_id") and drive_service:
-                        try:
-                            contenido = descargar_archivo_drive(drive_service, p["drive_id"])
-                            col_download.download_button(
-                                "Descargar PDF",
-                                data=contenido,
-                                file_name=p.get("nombre", "documento.pdf"),
-                                mime="application/pdf",
-                                key=f"download_multi_{exp.get('radicado_padre')}_{p.get('pagina_id')}",
-                            )
-                        except Exception as error:
-                            col_download.caption(f"No disponible: {error}")
+                        if col_view.button(
+                            "Ver",
+                            key=f"view_multi_{exp.get('radicado_padre')}_{p.get('pagina_id')}",
+                        ):
+                            try:
+                                contenido = descargar_archivo_drive(drive_service, p["drive_id"])
+                                with st.expander(
+                                    f"Vista previa: {p.get('nombre', 'Documento')}",
+                                    expanded=True,
+                                ):
+                                    mostrar_documento_en_aplicacion(
+                                        contenido,
+                                        p.get("nombre", "documento.pdf"),
+                                    )
+                            except Exception as error:
+                                st.error(f"No fue posible mostrar el documento: {error}")
+                        if es_modificador:
+                            try:
+                                contenido = descargar_archivo_drive(drive_service, p["drive_id"])
+                                col_download.download_button(
+                                    "Descargar",
+                                    data=contenido,
+                                    file_name=p.get("nombre", "documento.pdf"),
+                                    mime="application/pdf",
+                                    key=f"download_multi_{exp.get('radicado_padre')}_{p.get('pagina_id')}",
+                                )
+                            except Exception as error:
+                                col_download.caption(f"No disponible: {error}")
     elif criterio:
         st.warning("No se encontró ningún expediente por ese radicado o placa.")
 
@@ -1409,7 +1445,7 @@ elif st.session_state.navegacion == "Hoja Google Sheets":
     if st.button("Abrir base de datos en Google Sheets", type="primary", width="stretch"):
         abrir_en_navegador(SHEET_URL, "Google Sheets")
 
-elif st.session_state.navegacion == "Gestión de Permisos" and es_admin:
+elif st.session_state.navegacion == "Gestión de Permisos" and es_super_admin:
     if st.button("⬅️ Volver al Inicio"):
         st.session_state.navegacion = "Inicio"
         st.rerun()
