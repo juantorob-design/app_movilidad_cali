@@ -11,6 +11,23 @@ py -3.12 -m venv venv
 .\venv\Scripts\streamlit run app_6.py
 ```
 
+La dependencia `streamlit-pdf` se fija en una versión compatible con el visor
+integrado de Streamlit para que la vista previa de documentos funcione también
+en instalaciones nuevas.
+
+Los PDF cargados se leen para identificar radicado, placa y fecha cuando esos
+datos están disponibles en el texto. El archivo se normaliza como
+`radicado_placa_fecha_ubicacion.pdf`; los PDF escaneados como imagen pueden
+requerir que el usuario complete los campos del formulario.
+
+Las imágenes PNG y JPG cargadas como documentos se convierten automáticamente
+a PDF antes de guardarse. De esta forma pueden formar parte del expediente
+unificado, conservar su tipo documental y sincronizarse con Drive y Sheets.
+
+Cuando se cargan varios PDF, la pantalla permite ordenar sus archivos antes de
+guardarlos. El sistema genera además un PDF unificado en ese orden y conserva
+los archivos fuente y su trazabilidad dentro del expediente.
+
 Para usar el escritorio integrado:
 
 ```powershell

@@ -8,11 +8,13 @@ block_cipher = None
 
 # Recolectar datos de Streamlit, PyWebView y Google API
 datas = collect_data_files('streamlit')
+datas += collect_data_files('streamlit_pdf')
 datas += collect_data_files('webview')
 datas += collect_data_files('googleapiclient')
 
 # Incluir metadatos de paquetes requeridos
 datas += copy_metadata('streamlit')
+datas += copy_metadata('streamlit-pdf')
 datas += copy_metadata('pywebview')
 datas += copy_metadata('google-api-python-client')
 
@@ -40,6 +42,7 @@ datas += archivos_proyecto
 # Importaciones ocultas para evitar errores de módulos no encontrados en tiempo de ejecución
 hiddenimports = [
     'streamlit',
+    'streamlit_pdf',
     'streamlit.web.cli',
     'streamlit.runtime.caching',
     'webview',
@@ -63,8 +66,11 @@ hiddenimports = [
     'googleapiclient.discovery',
     'googleapiclient.errors',
     'googleapiclient.http',
+    'PIL',
+    'PIL.Image',
+    'PIL.PngImagePlugin',
     'clr',
-] + collect_submodules('streamlit') + collect_submodules('webview') + collect_submodules('openpyxl') + collect_submodules('googleapiclient') + collect_submodules('google_auth_oauthlib') + collect_submodules('PySide6')
+] + collect_submodules('streamlit') + collect_submodules('streamlit_pdf') + collect_submodules('webview') + collect_submodules('openpyxl') + collect_submodules('googleapiclient') + collect_submodules('google_auth_oauthlib') + collect_submodules('PySide6')
 
 # Resolver la ruta del icono para el ejecutable (.exe)
 icono_path = 'Icono.ico' if os.path.exists('Icono.ico') else os.path.join('images', 'logo.ico')
