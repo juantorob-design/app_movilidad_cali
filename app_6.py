@@ -831,7 +831,11 @@ if 'navegacion' not in st.session_state:
     st.session_state.navegacion = "Inicio"
 
 # Restaurar automáticamente solo una cuenta de Google ya aprobada.
-if not st.session_state.get("logged_in", False) and os.path.exists(TOKEN_FILE):
+if (
+    not st.session_state.get("logged_in", False)
+    and not st.session_state.get("google_auto_login_disabled", False)
+    and os.path.exists(TOKEN_FILE)
+):
     creds_auto = get_google_credentials()
     if creds_auto:
         email_auto = obtener_email_google(creds_auto)
@@ -872,6 +876,7 @@ def cerrar_sesion():
     st.session_state.logged_user = None
     st.session_state.navegacion = "Inicio"
     st.session_state.supabase_access_token = None
+    st.session_state.google_auto_login_disabled = True
     st.rerun()
 
 def calcular_ubicacion(n):
