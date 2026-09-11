@@ -291,9 +291,15 @@ st.markdown("""
     .brand-logo {
         display: block;
         height: 120px;
-        margin: 0 auto 12px;
         object-fit: contain;
         width: 120px;
+    }
+    .brand-logo-wrap {
+        align-items: center;
+        display: flex;
+        justify-content: center;
+        margin: 0 auto 12px;
+        width: 100%;
     }
     .header-title {
         color: #ffffff;
@@ -325,15 +331,23 @@ st.markdown("""
     }
 
     .action-tile {
-        display: block;
-        margin: 0 auto;
-        padding: 4px;
+        align-items: center;
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 12px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        min-height: 126px;
+        padding: 8px 6px;
         text-align: center;
         text-decoration: none !important;
         transition: transform 0.18s ease, filter 0.18s ease;
     }
 
     .action-tile:hover {
+        background: #16243c;
+        border-color: #2d466b;
         filter: brightness(1.16);
         transform: translateY(-4px);
     }
@@ -341,10 +355,10 @@ st.markdown("""
     .action-tile img {
         border-radius: 18px;
         display: block;
-        height: 78px;
+        height: 72px;
         margin: 0 auto 8px;
         object-fit: contain;
-        width: 78px;
+        width: 72px;
     }
 
     .action-tile span {
@@ -354,6 +368,22 @@ st.markdown("""
         font-weight: 600;
         line-height: 1.25;
     }
+
+    .launcher-grid {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        margin: 0 auto;
+        max-width: 900px;
+        width: 100%;
+    }
+    @media (min-width: 1100px) {
+        .launcher-grid {
+            grid-template-columns: repeat(6, minmax(0, 1fr));
+        }
+    }
+
+
 
     div[data-baseweb="input"] {
         background-color: #ffffff !important;
@@ -939,6 +969,22 @@ def render_win_app(col, img_path, titulo, destino_nav, key_prefix):
     with col:
         render_image_action(img_path, titulo, f"?nav={quote(destino_nav)}")
 
+def render_launcher_grid(items):
+    tiles = []
+    for img_path, label, href in items:
+        if not os.path.exists(img_path):
+            continue
+        encoded = get_image_base64(img_path)
+        tiles.append(
+            f'<a class="action-tile" href="{href}" target="_self">'
+            f'<img src="{encoded}" alt="{label}"><span>{label}</span></a>'
+        )
+    if tiles:
+        st.markdown(
+            f'<div class="launcher-grid">{"".join(tiles)}</div>',
+            unsafe_allow_html=True,
+        )
+
 # --- PANTALLA DE INGRESO / LOGIN ---
 if not st.session_state.get("logged_in", False):
     col_a, col_b, col_c = st.columns([1, 2, 1])
@@ -1187,7 +1233,8 @@ if st.session_state.navegacion == "Inicio":
     if os.path.exists(IMG_LOGO):
         logo_data = get_image_base64(IMG_LOGO)
         st.markdown(
-            f'<img class="brand-logo" src="{logo_data}" alt="Logo Alcaldía de Santiago de Cali">',
+            f'<div class="brand-logo-wrap"><img class="brand-logo" src="{logo_data}" '
+            'alt="Logo Alcaldía de Santiago de Cali"></div>',
             unsafe_allow_html=True,
         )
     st.markdown("""
@@ -1198,34 +1245,28 @@ if st.session_state.navegacion == "Inicio":
     """, unsafe_allow_html=True)
 
     st.markdown('<div class="launcher-title">Aplicaciones del sistema</div>', unsafe_allow_html=True)
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-
-    columnas = []
+    mosaico = []
     if "Entrada de Expedientes" in opciones_permitidas:
-        columnas.append((c1, IMG_CARD_REGISTRO, "Registro de Entrada", "Entrada de Expedientes", "reg"))
+        mosaico.append((IMG_CARD_REGISTRO, "Registro de Entrada", f"?nav={quote('Entrada de Expedientes')}"))
     if "Consulta & Archivo" in opciones_permitidas:
-        columnas.append((c2, IMG_CARD_BUSCADOR, "Buscador & Archivo", "Consulta & Archivo", "bus"))
-    for col, imagen, titulo, destino, clave in columnas:
-        render_win_app(col, imagen, titulo, destino, clave)
+        mosaico.append((IMG_CARD_BUSCADOR, "Buscador & Archivo", f"?nav={quote('Consulta & Archivo')}"))
     if puede_abrir_google:
-        with c3:
-            render_image_action(
+        mosaico.extend([
+            (
                 IMG_CARD_DRIVE,
                 "Google Drive",
                 f"sistema://open?url={quote(f'https://drive.google.com/drive/folders/{DRIVE_FOLDER_ID}', safe='')}&title=Google%20Drive",
-            )
-        with c4:
-            render_image_action(
+            ),
+            (
                 IMG_CARD_SHEETS,
                 "Google Sheets",
                 f"sistema://open?url={quote(SHEET_URL, safe='')}&title=Google%20Sheets",
-            )
+            ),
+        ])
     if es_super_admin:
-        render_win_app(c5, IMG_CARD_PERMISOS, "Gestión Permisos", "Gestión de Permisos", "prm")
-    else:
-        render_win_app(c5, IMG_CARD_PERFIL, "Mi Perfil", "Mi Perfil", "prf_user")
-        
-    render_win_app(c6, IMG_CARD_PERFIL, "Mi Perfil", "Mi Perfil", "prf_sys")
+        mosaico.append((IMG_CARD_PERMISOS, "Gestión Permisos", f"?nav={quote('Gestión de Permisos')}"))
+    mosaico.append((IMG_CARD_PERFIL, "Mi Perfil", f"?nav={quote('Mi Perfil')}"))
+    render_launcher_grid(mosaico)
 
 elif st.session_state.navegacion == "Entrada de Expedientes":
     if st.button("⬅️ Volver al Inicio"):
