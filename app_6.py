@@ -871,11 +871,7 @@ def cerrar_sesion():
     st.session_state.logged_in = False
     st.session_state.logged_user = None
     st.session_state.navegacion = "Inicio"
-    if os.path.exists(TOKEN_FILE):
-        try:
-            os.remove(TOKEN_FILE)
-        except Exception:
-            pass
+    st.session_state.supabase_access_token = None
     st.rerun()
 
 def calcular_ubicacion(n):
