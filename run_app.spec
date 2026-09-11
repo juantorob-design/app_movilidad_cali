@@ -21,11 +21,7 @@ archivos_proyecto = [
     ('app_6.py', '.'),
     ('updater.py', '.'),
     ('images', 'images'),
-    ('respaldo', 'respaldo'),
 ]
-
-if os.path.exists('credentials.json'):
-    archivos_proyecto.append(('credentials.json', '.'))
 
 # Incluir archivos opcionales si existen en la raíz
 if os.path.exists('Icono.ico'):

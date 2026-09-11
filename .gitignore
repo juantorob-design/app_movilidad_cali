@@ -6,10 +6,15 @@ __pycache__/
 token.json
 credentials.json
 database_local.json
+.env
+.env.*
+!.env.example
+respaldo/*.xlsx
 compilacion_log.txt
 .streamlit/secrets.toml
 # Artefactos locales del instalador y registros de compilación
 update_temp.exe
 update_installer.bat
+installer/*.exe
 desktop.ini
 *.lnk

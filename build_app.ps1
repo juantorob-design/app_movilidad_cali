@@ -15,8 +15,7 @@ try {
         "updater.py",
         "run_app.spec",
         "requirements.txt",
-        "images",
-        "respaldo"
+        "images"
     )
 
     $faltantes = @()

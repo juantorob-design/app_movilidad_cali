@@ -27,6 +27,8 @@ from urllib.parse import quote
 
 import streamlit as st
 import pandas as pd
+import requests
+from dotenv import load_dotenv
 try:
     import webview
 except ImportError:
@@ -43,6 +45,8 @@ try:
 except ImportError:
     def check_for_updates():
         pass
+
+load_dotenv()
 
 def dir_recursos():
     """Archivos estáticos empaquetados, como imágenes e iconos."""
@@ -121,6 +125,11 @@ if 'updater_checked' not in st.session_state:
     threading.Thread(target=check_for_updates, daemon=True).start()
 
 SUPER_ADMIN_EMAIL = "juan.torob@cun.edu.co"
+SUPABASE_URL = os.environ.get(
+    "SUPABASE_URL",
+    "https://ktgogijxtsidctkidrav.supabase.co",
+).rstrip("/")
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "").strip()
 DRIVE_FOLDER_ID = "1HQtfhjWv9M_PljH4mfP-qdke9d5nyGTF"
 SPREADSHEET_ID = "1GW6cogkzdGoGgsA_jsR0ltpb2mlyDg4dK88gk7xh73o"
 SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit"
@@ -136,7 +145,10 @@ CLIENT_SECRETS_FILE = os.environ.get(
     else resolver_ruta("credentials.json"),
 )
 TOKEN_FILE = resolver_dato("token.json")
-HISTORICO_FILE = resolver_ruta(os.path.join("respaldo", HISTORICO_FILENAME))
+HISTORICO_FILE = os.environ.get(
+    "SISTEMA_HISTORICO_FILE",
+    resolver_ruta(os.path.join("respaldo", HISTORICO_FILENAME)),
+)
 
 _db_origen = resolver_ruta("database_local.json")
 if not os.path.exists(LOCAL_DB_FILE) and os.path.exists(_db_origen):
@@ -156,6 +168,82 @@ SCOPES = [
 
 ROLES_DISPONIBLES = ["Sin Rol Asignado", "Visualizador", "Modificador", "Administrador", "Super Administrador"]
 ESTADOS_DISPONIBLES = ["Pendiente", "Activo", "Inactivo"]
+
+
+def supabase_configurado():
+    """Indica si la aplicación tiene configurado el cliente público de Supabase."""
+    return bool(SUPABASE_URL and SUPABASE_ANON_KEY)
+
+
+def supabase_auth_password(email, password):
+    """Autentica una cuenta local en Supabase Auth y devuelve su sesión."""
+    if not supabase_configurado():
+        return None
+    try:
+        response = requests.post(
+            f"{SUPABASE_URL}/auth/v1/token?grant_type=password",
+            headers={
+                "apikey": SUPABASE_ANON_KEY,
+                "Content-Type": "application/json",
+            },
+            json={"email": email, "password": password},
+            timeout=15,
+        )
+    except requests.RequestException as error:
+        st.warning(f"No fue posible contactar el servidor de autorización: {error}")
+        return None
+    if response.status_code != 200:
+        return None
+    return response.json()
+
+
+def supabase_registrar_password(email, password, nombre):
+    """Registra una cuenta local en Supabase; el perfil queda pendiente por RLS."""
+    if not supabase_configurado():
+        return False
+    try:
+        response = requests.post(
+            f"{SUPABASE_URL}/auth/v1/signup",
+            headers={
+                "apikey": SUPABASE_ANON_KEY,
+                "Content-Type": "application/json",
+            },
+            json={
+                "email": email,
+                "password": password,
+                "data": {"full_name": nombre},
+            },
+            timeout=15,
+        )
+    except requests.RequestException as error:
+        st.warning(f"No fue posible registrar la cuenta en el servidor: {error}")
+        return False
+    if response.status_code not in (200, 201):
+        return False
+    return True
+
+
+def supabase_obtener_perfil(access_token):
+    """Obtiene el estado y rol remotos del usuario autenticado."""
+    if not supabase_configurado() or not access_token:
+        return None
+    try:
+        response = requests.get(
+            f"{SUPABASE_URL}/rest/v1/profiles",
+            headers={
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": f"Bearer {access_token}",
+            },
+            params={"select": "email,full_name,role,status"},
+            timeout=15,
+        )
+    except requests.RequestException as error:
+        st.warning(f"No fue posible consultar el perfil remoto: {error}")
+        return None
+    if response.status_code != 200:
+        return None
+    perfiles = response.json()
+    return perfiles[0] if perfiles else None
 
 # Rutas de Imágenes
 IMG_LOGO = obtener_ruta_imagen("logo.png")
@@ -298,6 +386,20 @@ st.markdown("""
     }
     section[data-testid="stSidebar"] [data-testid="stImage"] img {
         margin: 0 auto;
+    }
+    .sidebar-brand {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        width: 100%;
+        margin: 0 auto 12px;
+    }
+    .sidebar-brand img {
+        display: block;
+        height: 92px;
+        width: 92px;
+        object-fit: contain;
+        border-radius: 14px;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -868,6 +970,27 @@ if not st.session_state.get("logged_in", False):
                     if usuario
                     else (False, False)
                 )
+                remote_session = supabase_auth_password(usr_input, pwd_input)
+                if remote_session:
+                    perfil_remoto = supabase_obtener_perfil(
+                        remote_session.get("access_token")
+                    )
+                    if perfil_remoto:
+                        usuario = usuarios.setdefault(
+                            usr_input,
+                            {
+                                "alias": perfil_remoto.get("full_name") or usr_input,
+                                "password": "",
+                                "metodo": "Supabase Auth",
+                                "fecha_registro": str(datetime.date.today()),
+                            },
+                        )
+                        usuario["rol"] = perfil_remoto.get("role", "Sin Rol Asignado")
+                        usuario["estado"] = perfil_remoto.get("status", "Pendiente")
+                        usuario["alias"] = perfil_remoto.get("full_name") or usuario.get("alias", usr_input)
+                        st.session_state.usuarios = usuarios
+                        st.session_state.supabase_access_token = remote_session.get("access_token")
+                        password_ok = True
                 if usuario and password_ok:
                     if not cuenta_activa(usuario):
                         st.warning("Su cuenta está pendiente de activación. Un administrador debe asignarle rol y estado Activo.")
@@ -972,12 +1095,15 @@ if not st.session_state.get("logged_in", False):
                     st.error("Por favor complete todos los campos obligatorios (*).")
                 elif reg_correo not in st.session_state.get("usuarios", {}):
                     primer_usuario = not st.session_state.usuarios
+                    remote_registered = supabase_registrar_password(
+                        reg_correo, reg_pass, reg_nombre
+                    )
                     st.session_state.usuarios[reg_correo] = {
                         "alias": reg_nombre,
                         "password": hash_password(reg_pass),
                         "rol": "Super Administrador" if primer_usuario else "Sin Rol Asignado",
                         "estado": "Activo" if primer_usuario else "Pendiente",
-                        "metodo": "Clave Local",
+                        "metodo": "Supabase Auth" if remote_registered else "Clave Local",
                         "fecha_registro": str(datetime.date.today())
                     }
                     guardar_local_json(st.session_state.db_expedientes)
@@ -1037,9 +1163,12 @@ opciones_menu = [
 # --- NAVEGACIÓN LATERAL ---
 with st.sidebar:
     if os.path.exists(IMG_LOGO):
-        sidebar_logo_col1, sidebar_logo_col2, sidebar_logo_col3 = st.columns([1, 2, 1])
-        with sidebar_logo_col2:
-            st.image(IMG_LOGO, width=92)
+        sidebar_logo_data = get_image_base64(IMG_LOGO)
+        st.markdown(
+            f'<div class="sidebar-brand"><img src="{sidebar_logo_data}" '
+            'alt="Logo Alcaldía de Santiago de Cali"></div>',
+            unsafe_allow_html=True,
+        )
     st.markdown("### Sistema de desvinculaciones")
     st.caption(datos_usuario["alias"])
     st.divider()
@@ -1371,12 +1500,15 @@ elif st.session_state.navegacion == "Base Histórica" and es_admin:
 
     st.header("Base histórica y respaldo")
     st.write(
-        "El Excel original está incluido como respaldo de solo lectura. "
+        "El Excel histórico se configura como un archivo externo de solo lectura. "
         "La importación agrega sus procesos al almacenamiento local sin modificar el archivo."
     )
 
     if not os.path.exists(HISTORICO_FILE):
-        st.error("No se encontró el archivo histórico incluido en el programa.")
+        st.error(
+            "No se encontró el archivo histórico externo configurado. "
+            "Configura SISTEMA_HISTORICO_FILE si necesitas importar el respaldo."
+        )
     else:
         st.success(f"Respaldo disponible: {HISTORICO_FILENAME}")
         try:
