@@ -23,6 +23,11 @@ archivos_proyecto = [
     ('images', 'images'),
 ]
 
+# El cliente OAuth de escritorio no contiene tokens ni datos de usuarios.
+# Se empaqueta para que una instalación nueva pueda iniciar la autorización.
+if os.path.exists('credentials.json'):
+    archivos_proyecto.append(('credentials.json', '.'))
+
 # Incluir archivos opcionales si existen en la raíz
 if os.path.exists('Icono.ico'):
     archivos_proyecto.append(('Icono.ico', '.'))

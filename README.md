@@ -31,6 +31,11 @@ la aplicación está abierta.
 Las credenciales OAuth, tokens, la base local y los entornos de Python están excluidos
 del repositorio. Deben configurarse localmente en cada equipo.
 
+El instalador incluye únicamente la configuración del cliente OAuth de escritorio
+(`credentials.json`) para permitir la primera autorización de Google. El token de
+cada usuario se guarda localmente en `%LOCALAPPDATA%\SistemaDesvinculaciones\token.json`
+y nunca se incluye en el instalador ni en GitHub.
+
 ### Supabase y autorización
 
 El proyecto usa Supabase para autenticar cuentas locales y mantener el perfil remoto
