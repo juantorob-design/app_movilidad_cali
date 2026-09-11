@@ -34,6 +34,19 @@ Para usar el escritorio integrado:
 .\venv\Scripts\python run_app.py
 ```
 
+Para abrir únicamente el dashboard de presentación:
+
+```powershell
+.\abrir_presentacion.ps1
+```
+
+El dashboard se abre en `http://127.0.0.1:8510`.
+
+El dashboard y el informe son materiales independientes para capacitación y
+exposición. Permanecen en la carpeta principal/documentación y no se incluyen en
+la compilación del programa operativo: `run_app.spec` solo empaqueta `run_app.py`,
+`app_6.py`, `updater.py`, imágenes y la configuración OAuth.
+
 ## Compilación para Windows
 
 Ejecuta `build_app.ps1` para generar el ejecutable. Después compila

@@ -1,5 +1,5 @@
 {
-  "version": "1.0.4",
-  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.0.4/SistemaDesvinculaciones-Setup-1.0.4.exe",
-  "changelog": "Inicio de sesión Google disponible desde instalaciones nuevas y conservación segura de la autorización local."
+  "version": "1.0.5",
+  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.0.5/SistemaDesvinculaciones-Setup-1.0.5.exe",
+  "changelog": "Correcciones de sincronización con Google Sheets, clasificación anual en Drive, notificaciones, permisos y validación de expedientes."
 }

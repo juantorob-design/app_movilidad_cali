@@ -25,6 +25,7 @@ import secrets
 import tempfile
 import threading
 import webbrowser
+from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import quote, urlencode, urlparse, parse_qs
 
@@ -147,8 +148,15 @@ SUPABASE_OAUTH_REDIRECT = os.environ.get(
     "SUPABASE_OAUTH_REDIRECT",
     "http://127.0.0.1:8765/oauth/callback",
 ).strip()
-DRIVE_FOLDER_ID = "1HQtfhjWv9M_PljH4mfP-qdke9d5nyGTF"
-SPREADSHEET_ID = "1GW6cogkzdGoGgsA_jsR0ltpb2mlyDg4dK88gk7xh73o"
+DRIVE_FOLDER_ID = os.environ.get(
+    "SISTEMA_DRIVE_FOLDER_ID",
+    "1HQtfhjWv9M_PljH4mfP-qdke9d5nyGTF",
+).strip()
+DRIVE_SCANNED_FOLDER_NAME = "PDFS Escaneados"
+SPREADSHEET_ID = os.environ.get(
+    "SISTEMA_SPREADSHEET_ID",
+    "1oQ5GnxSj4_gGA-p2NjlN3o0uDOLaIELZu4gpohLK6Uo",
+).strip()
 SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit"
 HISTORICO_FILENAME = "BD_DESVINCULACIONES ADMINISTRATIVAS.xlsx"
 
@@ -178,6 +186,7 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive.file',
     'https://www.googleapis.com/auth/drive.readonly',
     'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/gmail.send',
     'openid',
     'https://www.googleapis.com/auth/userinfo.email',
     'https://www.googleapis.com/auth/userinfo.profile'
@@ -391,7 +400,7 @@ def supabase_obtener_perfiles(access_token):
             f"{SUPABASE_URL}/rest/v1/profiles",
             headers={
                 "apikey": SUPABASE_ANON_KEY,
-                "Authorization": f"Bearer {access_token}",
+                "Authorization": "Bearer " + access_token,
             },
             params={"select": "email,full_name,role,status"},
             timeout=15,
@@ -414,7 +423,7 @@ def supabase_actualizar_perfil(access_token, email, role, status):
             f"{SUPABASE_URL}/rest/v1/profiles",
             headers={
                 "apikey": SUPABASE_ANON_KEY,
-                "Authorization": f"Bearer {access_token}",
+                "Authorization": "Bearer " + access_token,
                 "Content-Type": "application/json",
                 "Prefer": "return=minimal",
             },
@@ -444,7 +453,7 @@ def obtener_novedad_version():
     except (requests.RequestException, ValueError):
         data = {}
     return data or {
-        "version": "1.0.4",
+        "version": "1.0.5",
         "changelog": "Versión estable del sistema.",
     }
 
@@ -466,6 +475,39 @@ def obtener_usuarios_pendientes():
         if info.get("estado") == "Pendiente"
     ]
 
+def enviar_notificacion_correo(destinatario, asunto, mensaje):
+    """Envía una alerta usando el Gmail autorizado en esta instalación."""
+    destinatario = str(destinatario or "").strip()
+    asunto = str(asunto or "").strip()
+    mensaje = str(mensaje or "").strip()
+    if not destinatario or not asunto or not mensaje:
+        return False
+    creds = get_google_credentials()
+    if not creds or not creds.has_scopes(["https://www.googleapis.com/auth/gmail.send"]):
+        return False
+    correo = EmailMessage()
+    correo["To"] = destinatario
+    correo["Subject"] = asunto
+    correo["From"] = obtener_email_google(creds) or SUPER_ADMIN_EMAIL
+    correo.set_content(mensaje)
+    try:
+        servicio = build("gmail", "v1", credentials=creds)
+        servicio.users().messages().send(
+            userId="me",
+            body={
+                "raw": base64.urlsafe_b64encode(correo.as_bytes()).decode("ascii")
+            },
+        ).execute()
+        return True
+    except Exception as error:
+        st.warning(f"No fue posible enviar la notificación por correo: {error}")
+        return False
+
+
+def notificar_super_admin(asunto, mensaje):
+    """Notifica al correo institucional configurado como Super Administrador."""
+    return enviar_notificacion_correo(SUPER_ADMIN_EMAIL, asunto, mensaje)
+
 
 def obtener_solicitudes_descarga():
     return [
@@ -473,6 +515,33 @@ def obtener_solicitudes_descarga():
         for email, info in st.session_state.get("usuarios", {}).items()
         if solicitud_descarga_pendiente(info)
     ]
+
+
+def agregar_mensaje_soporte(remitente, asunto, mensaje):
+    """Guarda una consulta de soporte local para que la revise el Super Administrador."""
+    texto = str(mensaje or "").strip()
+    if not texto:
+        return False
+    mensajes = st.session_state.setdefault("mensajes_soporte", [])
+    mensajes.append({
+        "id": secrets.token_urlsafe(12),
+        "fecha": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "remitente": remitente,
+        "asunto": str(asunto or "Soporte").strip() or "Soporte",
+        "mensaje": texto,
+        "leido": False,
+    })
+    guardar_local_json(st.session_state.db_expedientes)
+    notificar_super_admin(
+        f"[Soporte urgente] {str(asunto or 'Soporte').strip() or 'Soporte'}",
+        (
+            f"Se recibió una consulta de soporte de {remitente}.\n\n"
+            f"Asunto: {str(asunto or 'Soporte').strip() or 'Soporte'}\n\n"
+            f"{texto}\n\n"
+            "Ingresa al Buzón de Mensajes para revisarla."
+        ),
+    )
+    return True
 
 
 def sincronizar_perfiles_remotos():
@@ -756,7 +825,9 @@ def get_google_credentials():
     creds = None
     if os.path.exists(TOKEN_FILE):
         try:
-            creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+            # Se carga el conjunto real del token para poder detectar si requiere
+            # una nueva autorización (por ejemplo, el permiso gmail.send).
+            creds = Credentials.from_authorized_user_file(TOKEN_FILE)
             if creds and creds.valid:
                 return creds
             if creds and creds.expired and creds.refresh_token:
@@ -819,6 +890,59 @@ def subir_archivo_a_drive(service, file_buffer, file_name, folder_id):
                 os.remove(temp_path)
             except Exception:
                 pass
+
+
+def buscar_o_crear_carpeta_drive(service, parent_id, folder_name):
+    """Devuelve una carpeta hija única, creándola si todavía no existe."""
+    if not service or not parent_id or not folder_name:
+        return None
+    try:
+        query = (
+            f"'{parent_id}' in parents and trashed = false "
+            "and mimeType = 'application/vnd.google-apps.folder' "
+            f"and name = '{folder_name.replace(chr(39), chr(39) + chr(39))}'"
+        )
+        carpetas = service.files().list(
+            q=query,
+            fields="files(id,name,parents)",
+            pageSize=100,
+            orderBy="createdTime",
+        ).execute().get("files", [])
+        if carpetas:
+            return carpetas[0].get("id")
+        creada = service.files().create(
+            body={
+                "name": folder_name,
+                "mimeType": "application/vnd.google-apps.folder",
+                "parents": [parent_id],
+            },
+            fields="id",
+        ).execute()
+        return creada.get("id")
+    except Exception as error:
+        st.error(f"No fue posible preparar la carpeta de Drive '{folder_name}': {error}")
+        return None
+
+
+def carpeta_drive_para_fecha(service, fecha):
+    """Obtiene PDFS Escaneados/AÑO para clasificar cada documento por año."""
+    try:
+        fecha_obj = datetime.date.fromisoformat(str(fecha or "").strip())
+        anio = str(fecha_obj.year)
+        escaneados_id = buscar_o_crear_carpeta_drive(
+            service,
+            DRIVE_FOLDER_ID,
+            DRIVE_SCANNED_FOLDER_NAME,
+        )
+        if not escaneados_id:
+            return None
+        return buscar_o_crear_carpeta_drive(service, escaneados_id, anio)
+    except (TypeError, ValueError):
+        st.error(
+            "No se puede clasificar el documento en Drive porque la fecha de "
+            "la petición no es válida. Usa el formato AAAA-MM-DD."
+        )
+        return None
 
 
 def huella_contenido(contenido):
@@ -1086,8 +1210,45 @@ def obtener_rango_primera_hoja(service, columnas="A:Z"):
 def normalizar_campo_sheet(valor):
     texto = unicodedata.normalize("NFKD", str(valor or ""))
     texto = "".join(caracter for caracter in texto if not unicodedata.combining(caracter))
-    texto = texto.replace("�", "")
+    # Algunas copias históricas tienen letras acentuadas dañadas como �.
+    texto = texto.replace("�", "O")
     return re.sub(r"\s+", " ", texto).strip().upper()
+
+
+COLUMNAS_SHEET_OFICIALES = [
+    "FECHA",
+    "PLACA",
+    "EMPRESA",
+    "NIT",
+    "DIRECCIÓN",
+    "PROPIETARIO",
+    "CEDULA",
+    "DIRECCIÓN",
+    "RAD PADRE",
+    "FECHA RAD-",
+    "RESOLUCIÓN DESVINCULACIÓN",
+    "FECHA DESVINCULACIÓN",
+    "OBSERVACIÓN",
+    "FUNCIONARIO QUE DESVINCULA",
+    "NUEVA EMPRESA",
+    "SOLICITANTE",
+    "ESTADO",
+    "CORREO ELECTRÓNICO",
+    "RECURSO",
+    "FECHA RECURSO",
+    "OBSERVACIONES",
+    "TIPO CASO",
+    "TIPO NOTIFICACIÓN",
+    "FECHA NOTIFICACIÓN",
+    "FECHA EJECUTORIA",
+    "FECHA REMISIÓN REGISTRO",
+    "QX VERIFICADO",
+    "DRIVE FOLDER",
+    "DOCUMENTOS DRIVE",
+    "PDF UNIFICADO",
+    "DOCUMENTOS FALTANTES",
+    "CONTENIDO DOCUMENTAL",
+]
 
 
 def letra_columna(numero):
@@ -1117,8 +1278,18 @@ def buscar_registro_en_sheets(service, radicado="", placa=""):
         for numero, fila in enumerate(filas[1:], start=2):
             valor_rad = str(fila[indice_rad]).strip().upper() if indice_rad is not None and len(fila) > indice_rad else ""
             valor_placa = str(fila[indice_placa]).strip().upper() if indice_placa is not None and len(fila) > indice_placa else ""
-            if (radicado and valor_rad == str(radicado).strip().upper()) or (
-                placa and valor_placa == str(placa).strip().upper()
+            coincide_radicado = (
+                bool(radicado)
+                and valor_rad == str(radicado).strip().upper()
+            )
+            coincide_placa = (
+                bool(placa)
+                and valor_placa == str(placa).strip().upper()
+            )
+            if (
+                coincide_radicado and (not placa or coincide_placa)
+            ) or (
+                coincide_placa and not radicado
             ):
                 return {
                     "fila": fila,
@@ -1216,6 +1387,7 @@ def resumen_documentos_drive(registro_datos):
 def valores_registro_para_sheet(registro_datos, columnas_drive):
     valores = {
         "FECHA": registro_datos.get("fecha_solicitud", ""),
+        "FECHA_SOLICITUD": registro_datos.get("fecha_solicitud", ""),
         "PLACA": registro_datos.get("placa", ""),
         "EMPRESA": registro_datos.get("empresa", ""),
         "NIT": registro_datos.get("nit", ""),
@@ -1223,18 +1395,31 @@ def valores_registro_para_sheet(registro_datos, columnas_drive):
         "PROPIETARIO": registro_datos.get("propietario", ""),
         "CEDULA": registro_datos.get("cedula", ""),
         "RAD PADRE": registro_datos.get("radicado_padre", ""),
+        "RADICADO_PADRE": registro_datos.get("radicado_padre", ""),
         "FECHA RAD-": registro_datos.get("fecha_radicacion", ""),
+        "FECHA_RADICACION": registro_datos.get("fecha_radicacion", ""),
         "RESOLUCN DESVINCULACN": registro_datos.get("resolucion", ""),
+        "RESOLUCION DESVINCULACION": registro_datos.get("resolucion", ""),
+        "RESOLUCION": registro_datos.get("resolucion", ""),
         "FECHA DESVINCULACN": registro_datos.get("fecha_resolucion", ""),
+        "FECHA DESVINCULACION": registro_datos.get("fecha_resolucion", ""),
+        "FECHA_DESVINCULACION": registro_datos.get("fecha_resolucion", ""),
         "OBSERVACION": registro_datos.get("observacion", ""),
         "FUNCIONARIO QUE DESVINCULA": registro_datos.get("funcionario", ""),
         "NUEVA EMPRESA": registro_datos.get("nueva_empresa", ""),
         "SOLICITANTE": registro_datos.get("solicitante", ""),
         "ESTADO": registro_datos.get("estado", ""),
         "CORREO ELECTRONICO": registro_datos.get("correo", ""),
+        "CORREO_ELECTRONICO": registro_datos.get("correo", ""),
         "RECURSO": registro_datos.get("recurso", ""),
         "FECHA RECURSO": registro_datos.get("fecha_recurso", ""),
         "OBSERVACIONES": registro_datos.get("notas", ""),
+        "TIPO CASO": registro_datos.get("tipo_caso", ""),
+        "TIPO NOTIFICACION": registro_datos.get("tipo_notificacion", ""),
+        "FECHA NOTIFICACION": registro_datos.get("fecha_notificacion", ""),
+        "FECHA EJECUTORIA": registro_datos.get("fecha_ejecutoria", ""),
+        "FECHA REMISION REGISTRO": registro_datos.get("fecha_remision_registro", ""),
+        "QX VERIFICADO": "SI" if registro_datos.get("qx_verificado") else "NO",
     }
     valores.update(columnas_drive)
     return valores
@@ -1264,9 +1449,15 @@ def fila_registro_para_sheet(encabezados, registro_datos, fila_anterior=None):
 
 
 def ordenar_sheet_por_fecha(service, encabezados):
+    encabezados_normalizados = [
+        normalizar_campo_sheet(encabezado) for encabezado in encabezados
+    ]
     indice_fecha = next(
-        (indice for indice, encabezado in enumerate(encabezados)
-         if normalizar_campo_sheet(encabezado) == "FECHA"),
+        (
+            encabezados_normalizados.index(nombre)
+            for nombre in ("FECHA", "FECHA SOLICITUD", "FECHA_SOLICITUD")
+            if nombre in encabezados_normalizados
+        ),
         None,
     )
     if indice_fecha is None:
@@ -1311,11 +1502,13 @@ def guardar_registro_en_sheets(service, registro_datos):
             fila = list(existente["fila"])
             encabezados = list(existente["encabezados"])
             columnas_drive = resumen_documentos_drive(registro_datos)
-            faltantes_drive = [
-                nombre for nombre in columnas_drive if nombre not in encabezados
+            encabezados_normalizados = [normalizar_campo_sheet(nombre) for nombre in encabezados]
+            faltantes_oficiales = [
+                nombre for nombre in COLUMNAS_SHEET_OFICIALES
+                if normalizar_campo_sheet(nombre) not in encabezados_normalizados
             ]
-            if faltantes_drive:
-                encabezados.extend(faltantes_drive)
+            if faltantes_oficiales:
+                encabezados.extend(faltantes_oficiales)
                 service.spreadsheets().values().update(
                     spreadsheetId=SPREADSHEET_ID,
                     range=obtener_rango_primera_hoja(
@@ -1339,13 +1532,18 @@ def guardar_registro_en_sheets(service, registro_datos):
             ).execute()
             ordenar_sheet_por_fecha(service, encabezados)
         else:
-            encabezados = leer_registros_sheets(service)[0]
+            filas_actuales = leer_registros_sheets(service)
+            if not filas_actuales:
+                raise ValueError("La pestaña de Google Sheets no tiene encabezados.")
+            encabezados = list(filas_actuales[0])
             columnas_drive = resumen_documentos_drive(registro_datos)
-            faltantes_drive = [
-                nombre for nombre in columnas_drive if nombre not in encabezados
+            encabezados_normalizados = [normalizar_campo_sheet(nombre) for nombre in encabezados]
+            faltantes_oficiales = [
+                nombre for nombre in COLUMNAS_SHEET_OFICIALES
+                if normalizar_campo_sheet(nombre) not in encabezados_normalizados
             ]
-            if faltantes_drive:
-                encabezados.extend(faltantes_drive)
+            if faltantes_oficiales:
+                encabezados.extend(faltantes_oficiales)
                 service.spreadsheets().values().update(
                     spreadsheetId=SPREADSHEET_ID,
                     range=obtener_rango_primera_hoja(
@@ -1356,14 +1554,15 @@ def guardar_registro_en_sheets(service, registro_datos):
                     body={"values": [encabezados]},
                 ).execute()
             valores = [fila_registro_para_sheet(encabezados, registro_datos)]
+            siguiente_fila = len(filas_actuales) + 1
             rango = obtener_rango_primera_hoja(
-                service, f"A:{letra_columna(len(encabezados))}"
+                service,
+                f"A{siguiente_fila}:{letra_columna(len(encabezados))}{siguiente_fila}",
             )
-            service.spreadsheets().values().append(
+            service.spreadsheets().values().update(
                 spreadsheetId=SPREADSHEET_ID,
                 range=rango,
                 valueInputOption="USER_ENTERED",
-                insertDataOption="INSERT_ROWS",
                 body={"values": valores},
             ).execute()
             ordenar_sheet_por_fecha(service, encabezados)
@@ -1375,7 +1574,7 @@ def guardar_registro_en_sheets(service, registro_datos):
 def leer_registros_sheets(service):
     try:
         sheet = service.spreadsheets()
-        rango = obtener_rango_primera_hoja(service, "A1:Z1000")
+        rango = obtener_rango_primera_hoja(service, "A1:AZ2000")
         result = sheet.values().get(
             spreadsheetId=SPREADSHEET_ID,
             range=rango
@@ -1389,7 +1588,8 @@ def guardar_local_json(data):
     try:
         contenido = {
             "expedientes": data,
-            "usuarios": st.session_state.get("usuarios", {})
+            "usuarios": st.session_state.get("usuarios", {}),
+            "mensajes_soporte": st.session_state.get("mensajes_soporte", []),
         }
         with open(LOCAL_DB_FILE, 'w', encoding='utf-8') as f:
             json.dump(contenido, f, ensure_ascii=False, indent=4)
@@ -1407,8 +1607,13 @@ def cargar_base_datos_inicial(service):
                 if "expedientes" in raw_data:
                     db_cargada = raw_data.get("expedientes", {})
                     usuarios_cargados.update(raw_data.get("usuarios", {}))
+                    st.session_state.mensajes_soporte = raw_data.get(
+                        "mensajes_soporte",
+                        [],
+                    )
                 else:
                     db_cargada = raw_data
+                    st.session_state.mensajes_soporte = []
         except Exception:
             pass
 
@@ -1653,6 +1858,8 @@ if 'db_expedientes' not in st.session_state or 'usuarios' not in st.session_stat
     exp_data, usr_data = cargar_base_datos_inicial(sheets_service)
     st.session_state.db_expedientes = exp_data
     st.session_state.usuarios = usr_data
+if "mensajes_soporte" not in st.session_state:
+    st.session_state.mensajes_soporte = []
 
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
@@ -1930,6 +2137,17 @@ if not st.session_state.get("logged_in", False):
             has_token = os.path.exists(TOKEN_FILE)
 
             if has_token:
+                credenciales_actuales = get_google_credentials()
+                if credenciales_actuales and not credenciales_actuales.has_scopes(
+                    ["https://www.googleapis.com/auth/gmail.send"]
+                ):
+                    st.info(
+                        "Para recibir y enviar alertas por correo debes actualizar "
+                        "la autorización de Google en este equipo."
+                    )
+                    if st.button("Actualizar autorización para notificaciones"):
+                        autenticar_google_escritorio()
+                        st.rerun()
                 if st.button("🟢 Ingresar con Google (Sesión Activa)", width="stretch"):
                     creds = get_google_credentials()
                     if creds:
@@ -2026,6 +2244,15 @@ if not st.session_state.get("logged_in", False):
                     if primer_usuario:
                         st.success("Cuenta creada. Es el primer usuario y quedó habilitado como administrador.")
                     else:
+                        notificar_super_admin(
+                            "Nueva solicitud de activación - Sistema de Desvinculaciones",
+                            (
+                                f"Se registró una nueva cuenta pendiente.\n\n"
+                                f"Nombre: {reg_nombre}\n"
+                                f"Correo: {reg_correo}\n\n"
+                                "Ingresa a Gestión de Permisos para asignar el rol y activar la cuenta."
+                            ),
+                        )
                         st.success("Solicitud registrada exitosamente. Un administrador debe activarla.")
                 else:
                     st.warning("El correo ya se encuentra registrado.")
@@ -2101,9 +2328,15 @@ with st.sidebar:
         if opc == "Buzón de Mensajes" and es_super_admin:
             pendientes = len(obtener_usuarios_pendientes())
             solicitudes = len(obtener_solicitudes_descarga())
-            total_avisos = pendientes + solicitudes
+            soporte = sum(
+                1 for mensaje in st.session_state.get("mensajes_soporte", [])
+                if not mensaje.get("leido")
+            )
+            total_avisos = pendientes + solicitudes + soporte
             if total_avisos:
-                etiqueta = f"{opc} ({total_avisos})"
+                etiqueta = f"🔔 {opc} ({total_avisos})"
+            else:
+                etiqueta = f"🔔 {opc}"
         if st.button(etiqueta, key=f"btn_side_{opc}", width="stretch"):
             st.session_state.navegacion = opc
             st.rerun()
@@ -2220,6 +2453,14 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 index=TIPOS_DOCUMENTALES.index("Solicitud"),
                 key=f"tipo_documento_{st.session_state.form_registro_version}",
             )
+        peticion_incluida = st.checkbox(
+            "La petición principal está incluida en esta carga",
+            value=tipo_documento == "Solicitud",
+            help=(
+                "Si se carga un anexo suelto, desmarca esta opción y completa "
+                "manualmente el radicado y la fecha de creación de la petición."
+            ),
+        )
         if tipo_documento == "Expediente completo":
             st.info(
                 "Si cargas varios documentos individuales, selecciona su tipo "
@@ -2284,7 +2525,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     "Campos encontrados en Sheets: "
                     + ", ".join(datos_sheet.keys())
                 )
-            datos_carga = {**datos_carga, **datos_sheet}
+            datos_carga = {**datos_sheet, **datos_carga}
             if datos_carga.get("fecha_solicitud"):
                 try:
                     fecha_carga = datetime.date.fromisoformat(
@@ -2304,7 +2545,17 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 ).strip()
                 if not datos_carga.get("radicado_padre"):
                     st.warning("Radicado no detectado: escríbelo manualmente.")
-                solicitante = st.selectbox("Solicitante", ["Propietario", "Empresa"])
+                solicitante_opciones = ["Propietario", "Empresa", "Apoderado", "Entidad pública", "Otro"]
+                solicitante_actual = datos_carga.get("solicitante", "Propietario")
+                solicitante = st.selectbox(
+                    "Solicitante",
+                    solicitante_opciones,
+                    index=(
+                        solicitante_opciones.index(solicitante_actual)
+                        if solicitante_actual in solicitante_opciones
+                        else 0
+                    ),
+                )
                 fecha_solicitud = st.date_input("Fecha Solicitud", value=fecha_carga)
                 if not datos_carga.get("fecha_solicitud"):
                     st.warning("Fecha no detectada: verifica o completa la fecha.")
@@ -2333,6 +2584,56 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 fecha_remision = st.date_input("Fecha remisión a registro", value=None)
                 notas = st.text_area("Notas", placeholder="Anotaciones adicionales del expediente")
 
+            st.markdown("#### Información administrativa completa")
+            datos_col1, datos_col2, datos_col3 = st.columns(3)
+            with datos_col1:
+                empresa_registro = st.text_input("Empresa", value=datos_carga.get("empresa", ""))
+                nit_registro = st.text_input("NIT", value=datos_carga.get("nit", ""))
+                propietario_registro = st.text_input(
+                    "Propietario",
+                    value=datos_carga.get("propietario", ""),
+                )
+                cedula_registro = st.text_input("Cédula", value=datos_carga.get("cedula", ""))
+            with datos_col2:
+                direccion_empresa_registro = st.text_input(
+                    "Dirección empresa",
+                    value=datos_carga.get("direccion_empresa", ""),
+                )
+                direccion_propietario_registro = st.text_input(
+                    "Dirección propietario",
+                    value=datos_carga.get("direccion_propietario", ""),
+                )
+                nueva_empresa_registro = st.text_input(
+                    "Nueva empresa",
+                    value=datos_carga.get("nueva_empresa", ""),
+                )
+                funcionario_registro = st.text_input(
+                    "Funcionario que desvincula",
+                    value=datos_carga.get("funcionario", datos_usuario.get("alias", "")),
+                )
+            with datos_col3:
+                fecha_radicacion_registro = st.text_input(
+                    "Fecha de radicación",
+                    value=datos_carga.get("fecha_radicacion", ""),
+                    placeholder="AAAA-MM-DD",
+                )
+                correo_registro = st.text_input(
+                    "Correo electrónico",
+                    value=datos_carga.get("correo", ""),
+                )
+                recurso_registro = st.text_input(
+                    "Recurso",
+                    value=datos_carga.get("recurso", ""),
+                )
+                fecha_recurso_registro = st.date_input(
+                    "Fecha recurso",
+                    value=None,
+                )
+                observacion_registro = st.text_area(
+                    "Observación",
+                    value=datos_carga.get("observacion", ""),
+                )
+
             btn_guardar = st.form_submit_button("Guardar y Sincronizar Datos", width="stretch")
 
         if btn_guardar:
@@ -2358,6 +2659,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     archivos_ordenados = [archivos_canvas[indice] for indice in indices]
                 if archivos_ordenados:
                     archivos_preparados = []
+                    carpeta_expediente_drive_id = None
                     for archivo in archivos_ordenados:
                         contenido_original = archivo.getvalue()
                         if archivo.name.lower().endswith(".pdf"):
@@ -2410,7 +2712,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         nombre_drive = nombre_documento_expediente(
                             datos_pdf.get("radicado_padre") or radicado_padre,
                             datos_pdf.get("placa") or matricula_qx,
-                            datos_pdf.get("fecha_solicitud") or str(fecha_solicitud),
+                            str(fecha_solicitud),
                             f"{tipo_documento}_{cod_ub}",
                             os.path.splitext(nombre_original)[1] or ".pdf",
                         )
@@ -2435,10 +2737,18 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             ),
                             None,
                         )
-                        if drive_service:
+                        if duplicado_local:
+                            st.info(f"Se omitió el duplicado: {nombre_original}")
+                            continue
+                        carpeta_documento_id = carpeta_drive_para_fecha(
+                            drive_service,
+                            str(fecha_solicitud),
+                        ) if drive_service else None
+                        if drive_service and carpeta_documento_id:
+                            carpeta_expediente_drive_id = carpeta_documento_id
                             duplicado_drive = buscar_archivo_drive(
                                 drive_service,
-                                DRIVE_FOLDER_ID,
+                                carpeta_documento_id,
                                 nombre_drive,
                                 contenido_archivo,
                             )
@@ -2450,14 +2760,8 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                     drive_service,
                                     io.BytesIO(contenido_archivo),
                                     nombre_drive,
-                                    DRIVE_FOLDER_ID,
+                                    carpeta_documento_id,
                                 )
-                        if duplicado_local:
-                            file_id = duplicado_local.get("drive_id") or file_id
-                            drive_url = duplicado_local.get("drive_url") or drive_url
-                        if duplicado_local:
-                            st.info(f"Se omitió el duplicado: {nombre_original}")
-                            continue
                         canvas_list.append({
                             "pagina_id": idx + 1,
                             "nombre": nombre_drive,
@@ -2497,9 +2801,13 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                 None,
                             )
                             if drive_service:
+                                carpeta_unificado_id = carpeta_expediente_drive_id or carpeta_drive_para_fecha(
+                                    drive_service,
+                                    str(fecha_solicitud),
+                                )
                                 copia_unificada = buscar_archivo_drive(
                                     drive_service,
-                                    DRIVE_FOLDER_ID,
+                                    carpeta_unificado_id,
                                     nombre_unificado,
                                     pdf_unificado,
                                 )
@@ -2511,7 +2819,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                         drive_service,
                                         io.BytesIO(pdf_unificado),
                                         nombre_unificado,
-                                        DRIVE_FOLDER_ID,
+                                        carpeta_unificado_id,
                                     )
                                     if anterior_unificado and anterior_unificado.get("drive_id"):
                                         eliminar_archivo_drive(
@@ -2570,15 +2878,28 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 for documento in canvas_list:
                     for campo, valor in documento.get("metadatos_pdf", {}).items():
                         datos_detectados.setdefault(campo, valor)
-                radicado_registro = datos_detectados.get("radicado_padre", radicado_padre)
+                radicado_registro = (
+                    datos_detectados.get("radicado_padre", radicado_padre)
+                    if peticion_incluida
+                    else radicado_padre.strip()
+                )
                 placa_registro = datos_detectados.get("placa", matricula_qx)
-                fecha_registro = datos_detectados.get("fecha_solicitud", str(fecha_solicitud))
+                # La fecha de la petición es la única fuente para el año documental.
+                fecha_registro = str(fecha_solicitud)
                 if not radicado_registro or not placa_registro:
                     st.error(
                         "No fue posible detectar el radicado y la placa. "
                         "Completa manualmente los campos indicados."
                     )
                     st.stop()
+                if archivos_canvas and not peticion_incluida:
+                    if not radicado_padre.strip() or not str(fecha_solicitud).strip():
+                        st.error(
+                            "Este archivo no contiene la petición principal. "
+                            "Debes indicar manualmente el radicado y la fecha de creación "
+                            "de la petición para clasificarlo en Drive."
+                        )
+                        st.stop()
                 existente_final = st.session_state.db_expedientes.get(radicado_registro)
                 fuente_existente = {
                     **(existente_final or {}),
@@ -2593,22 +2914,48 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     "id": total_expedientes,
                     "radicado_padre": radicado_registro,
                     "placa": placa_registro,
-                    "empresa": valor_actual("empresa"),
-                    "nit": valor_actual("nit"),
-                    "direccion_empresa": valor_actual("direccion_empresa"),
-                    "direccion_propietario": valor_actual("direccion_propietario"),
-                    "propietario": valor_actual("propietario"),
-                    "cedula": valor_actual("cedula"),
-                    "observacion": valor_actual("observacion"),
-                    "funcionario": valor_actual("funcionario"),
-                    "nueva_empresa": valor_actual("nueva_empresa"),
-                    "correo": valor_actual("correo"),
-                    "recurso": valor_actual("recurso"),
-                    "fecha_recurso": valor_actual("fecha_recurso"),
+                    "empresa": valor_actual("empresa", empresa_registro.strip()),
+                    "nit": valor_actual("nit", nit_registro.strip()),
+                    "direccion_empresa": valor_actual(
+                        "direccion_empresa",
+                        direccion_empresa_registro.strip(),
+                    ),
+                    "direccion_propietario": valor_actual(
+                        "direccion_propietario",
+                        direccion_propietario_registro.strip(),
+                    ),
+                    "propietario": valor_actual("propietario", propietario_registro.strip()),
+                    "cedula": valor_actual("cedula", cedula_registro.strip()),
+                    "observacion": valor_actual(
+                        "observacion",
+                        observacion_registro.strip(),
+                    ),
+                    "funcionario": valor_actual(
+                        "funcionario",
+                        funcionario_registro.strip(),
+                    ),
+                    "nueva_empresa": valor_actual(
+                        "nueva_empresa",
+                        nueva_empresa_registro.strip(),
+                    ),
+                    "correo": valor_actual("correo", correo_registro.strip()),
+                    "recurso": valor_actual("recurso", recurso_registro.strip()),
+                    "fecha_recurso": valor_actual(
+                        "fecha_recurso",
+                        str(fecha_recurso_registro).strip()
+                        if "fecha_recurso_registro" in locals()
+                        else "",
+                    ),
                     "solicitante": valor_actual("solicitante", solicitante),
                     "tipo_caso": tipo_caso_final,
                     "fecha_solicitud": fecha_registro,
                     "fecha_minima": fecha_registro,
+                    "peticion_incluida": peticion_incluida,
+                    "peticion_pendiente": not peticion_incluida,
+                    "fecha_radicacion": valor_actual(
+                        "fecha_radicacion",
+                        fecha_radicacion_registro.strip(),
+                    ),
                     "qx_verificado": qx_verificado or fuente_existente.get("qx_verificado", False),
                     "resolucion": valor_actual("resolucion", num_resolucion),
                     "fecha_resolucion": valor_actual(
@@ -2638,7 +2985,12 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     "documentos_esperados": documentos_esperados,
                     "drive_folder": valor_actual(
                         "drive_folder",
-                        f"https://drive.google.com/drive/folders/{DRIVE_FOLDER_ID}",
+                        (
+                            f"https://drive.google.com/drive/folders/{carpeta_expediente_drive_id}"
+                            if "carpeta_expediente_drive_id" in locals()
+                            and carpeta_expediente_drive_id
+                            else f"https://drive.google.com/drive/folders/{DRIVE_FOLDER_ID}"
+                        ),
                     ),
                     "modificado_por": datos_usuario["alias"],
                     "notas": valor_actual("notas", notas.strip()),
@@ -2951,7 +3303,46 @@ elif st.session_state.navegacion == "Buzón de Mensajes":
     st.info(novedades.get("changelog", "No hay notas de versión disponibles."))
     st.caption("Las actualizaciones se publican mediante el instalador oficial de GitHub.")
 
+    st.subheader("Soporte")
+    st.caption(
+        "Envía una consulta al Super Administrador. Las notificaciones quedan "
+        "registradas en el buzón local del sistema."
+    )
+    with st.form("form_mensaje_soporte"):
+        asunto_soporte = st.text_input("Asunto", placeholder="Ej: Documento sin petición")
+        mensaje_soporte = st.text_area(
+            "Mensaje",
+            placeholder="Describe el problema, radicado o ayuda que necesitas.",
+        )
+        enviar_soporte = st.form_submit_button("Enviar consulta")
+    if enviar_soporte:
+        if agregar_mensaje_soporte(
+            correo_activo,
+            asunto_soporte,
+            mensaje_soporte,
+        ):
+            st.success("Consulta enviada al buzón del Super Administrador.")
+            st.rerun()
+
     if es_super_admin:
+        mensajes = st.session_state.get("mensajes_soporte", [])
+        st.subheader("Consultas de soporte")
+        pendientes_soporte = [mensaje for mensaje in mensajes if not mensaje.get("leido")]
+        if pendientes_soporte:
+            st.warning(f"Hay {len(pendientes_soporte)} consulta(s) sin leer.")
+        for mensaje in reversed(mensajes):
+            with st.expander(
+                f"{mensaje.get('asunto', 'Soporte')} · {mensaje.get('fecha', '')}"
+            ):
+                st.write(f"**De:** {mensaje.get('remitente', '')}")
+                st.write(mensaje.get("mensaje", ""))
+                if not mensaje.get("leido") and st.button(
+                    "Marcar como leída",
+                    key=f"read_support_{mensaje.get('id')}",
+                ):
+                    mensaje["leido"] = True
+                    guardar_local_json(st.session_state.db_expedientes)
+                    st.rerun()
         pendientes = obtener_usuarios_pendientes()
         st.subheader("Pendientes de aprobación")
         if pendientes:
@@ -3129,6 +3520,26 @@ elif st.session_state.navegacion == "Gestión de Permisos" and es_super_admin:
                     if st.session_state.usuarios[email]["permiso_descarga"]:
                         st.session_state.usuarios[email]["solicitud_descarga"] = False
                     guardar_local_json(st.session_state.db_expedientes)
+                    enviar_notificacion_correo(
+                        email,
+                        "Actualización de permisos - Sistema de Desvinculaciones",
+                        (
+                            f"Tu cuenta fue actualizada por {correo_activo}.\n\n"
+                            f"Estado: {nuevo_estado}\n"
+                            f"Rol asignado: {nuevo_rol}\n"
+                            f"Descarga de documentos: "
+                            f"{'autorizada' if st.session_state.usuarios[email]['permiso_descarga'] else 'no autorizada'}\n\n"
+                            "Ingresa al sistema para consultar los cambios."
+                        ),
+                    )
+                    if nuevo_estado == "Activo" or nuevo_rol != rol_user:
+                        notificar_super_admin(
+                            "Permisos actualizados - Sistema de Desvinculaciones",
+                            (
+                                f"{correo_activo} actualizó la cuenta {email}.\n"
+                                f"Estado: {nuevo_estado}; rol: {nuevo_rol}."
+                            ),
+                        )
                     st.success("Permisos guardados en Supabase y en la caché local.")
                     st.rerun()
 
