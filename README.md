@@ -18,7 +18,8 @@ en instalaciones nuevas.
 Los PDF cargados se leen para identificar radicado, placa y fecha cuando esos
 datos están disponibles en el texto. El archivo se normaliza como
 `radicado_placa_fecha_ubicacion.pdf`; los PDF escaneados como imagen pueden
-requerir que el usuario complete los campos del formulario.
+requerir que el usuario complete los campos del formulario. El registro muestra
+un resumen y un visor integrado antes de guardar.
 
 Las imágenes PNG y JPG cargadas como documentos se convierten automáticamente
 a PDF antes de guardarse. De esta forma pueden formar parte del expediente
@@ -27,6 +28,12 @@ unificado, conservar su tipo documental y sincronizarse con Drive y Sheets.
 Cuando se cargan varios PDF, la pantalla permite ordenar sus archivos antes de
 guardarlos. El sistema genera además un PDF unificado en ese orden y conserva
 los archivos fuente y su trazabilidad dentro del expediente.
+
+Los anexos pueden llegar sin fecha de petición. Si el expediente todavía no
+existe, se conservan en `PDFS Escaneados/Pendientes` y se pueden consultar por
+radicado o placa hasta que la petición principal permita reubicarlos y unirlos.
+El checklist documental se calcula según el desenlace: sin recurso, con recurso
+o desistimiento.
 
 Para usar el escritorio integrado:
 
@@ -52,9 +59,9 @@ la compilación del programa operativo: `run_app.spec` solo empaqueta `run_app.p
 Ejecuta `build_app.ps1` para generar el ejecutable. Después compila
 `installer.iss` con Inno Setup para crear el instalador de Windows.
 
-Las actualizaciones publicadas se consultan mediante `version.json` y se aplican
-ejecutando el instalador de la nueva versión, sin reemplazar archivos mientras
-la aplicación está abierta.
+Las actualizaciones publicadas se consultan mediante `version.json`. Cuando hay
+una versión nueva, la aplicación muestra botones para autorizar **Actualizar
+ahora** o seleccionar **Más tarde**; el instalador no se descarga sin autorización.
 
 ## Datos y credenciales
 

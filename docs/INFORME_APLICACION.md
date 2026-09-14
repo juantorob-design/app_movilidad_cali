@@ -57,6 +57,10 @@ El usuario carga uno o varios PDF, PNG, JPG o JPEG. El sistema:
 6. identifica el desenlace del caso;
 7. conserva los datos anteriores si un campo nuevo llega vacío.
 
+Antes de guardar, el registro muestra un resumen de archivos recibidos, campos
+detectados, desenlace y destino previsto. También incorpora un visor integrado
+para revisar el PDF sin salir del formulario.
+
 ### 3.3 Clasificación de desenlaces
 
 El sistema trabaja con tres desenlaces válidos:
@@ -76,6 +80,18 @@ de ejecutoria.
 
 Cuando hay varios documentos se crea un PDF unificado en el orden definido y
 se conservan los archivos fuente junto con su trazabilidad.
+
+Los documentos complementarios pueden llegar sin la fecha de la petición. Si
+se pueden identificar por radicado o placa, reutilizan los datos del expediente
+o de Sheets. Si todavía no existe la petición principal, se guardan en
+`PDFS Escaneados/Pendientes`, con un nombre identificable, y quedan disponibles
+en la bandeja de pendientes para revisarlos, moverlos y unirlos posteriormente.
+
+El checklist documental distingue los tres desenlaces:
+
+- **Sin recurso:** Solicitud, Resolución, Notificación y Constancia de ejecutoria.
+- **Con recurso:** Solicitud, Recurso, Resolución y Notificación.
+- **Desistimiento:** Solicitud y Desistimiento.
 
 ### 3.5 Google Drive
 
@@ -122,9 +138,9 @@ Las dos hojas principales se interpretan así:
 
 La petición/radicado padre es la fuente única para clasificar el año del expediente.
 La fecha de resolución, notificación, recurso o anexos no puede cambiar la carpeta
-anual. Un archivo suelto debe incluir manualmente radicado, fecha de creación de la
-petición y placa; de lo contrario, la carga se bloquea. Cuando se carga sin la
-petición principal, el expediente queda marcado como pendiente.
+anual. Un archivo complementario puede guardarse con el radicado o la placa
+disponibles. Si no hay suficiente información para asociarlo a un expediente,
+se conserva en la bandeja de pendientes sin inventar un año documental.
 
 El dashboard de capacitación es independiente, se abre con `abrir_presentacion.ps1`
 en el puerto 8510 y no forma parte del ejecutable operativo.
@@ -184,9 +200,13 @@ instalador de Inno Setup para Windows de 64 bits. El actualizador consulta
 `version.json` en GitHub Raw y, si encuentra una versión superior, descarga el
 instalador correspondiente.
 
-La nueva versión preparada para publicación es la 1.0.5:
+La versión publicada y vigente es la 1.1.0:
 
-<https://github.com/juantorob-design/app_movilidad_cali/releases/tag/v1.0.5>
+<https://github.com/juantorob-design/app_movilidad_cali/releases/tag/v1.1.0>
+
+Cuando existe una versión superior, la aplicación muestra un aviso con los
+botones **Actualizar ahora** y **Más tarde**. La descarga solo inicia después
+de la autorización explícita del usuario.
 
 ## 7. Guion de demostración
 
@@ -194,14 +214,14 @@ Para mostrar la aplicación en una reunión:
 
 1. Explicar que el escritorio concentra todo el proceso.
 2. Abrir el dashboard y mostrar indicadores de expedientes y faltantes.
-3. Entrar a Registro de Entrada y cargar un documento.
-4. Mostrar la detección de radicado, placa, fecha y tipo documental.
-5. Explicar la clasificación con recurso, sin recurso o desistimiento.
-6. Mostrar cómo se conserva el expediente y se genera el PDF unificado.
-7. Abrir Consulta y Archivo para buscar por radicado, placa o fecha.
-8. Mostrar los enlaces de Drive y la fila relacionada de Sheets.
-9. Explicar los roles y el control de permisos.
-10. Finalizar mostrando el instalador, la actualización y la protección de datos.
+3. Entrar a Registro de Entrada y cargar un documento controlado.
+4. Mostrar el resumen, el visor, los campos detectados y el destino previsto.
+5. Explicar el checklist de Sin recurso, Con recurso o Desistimiento.
+6. Cargar un anexo sin fecha y mostrar la ruta de Pendientes.
+7. Abrir Consulta & Archivo para revisar pendientes y buscar por radicado, placa o fecha.
+8. Mostrar la carpeta de Drive, el PDF unificado y la fila relacionada de Sheets.
+9. Explicar los roles, permisos y la conservación de datos existentes.
+10. Finalizar mostrando el aviso de actualización autorizada y la protección de datos.
 
 ## 8. Validación de cierre
 
@@ -239,6 +259,9 @@ Durante el desarrollo se corrigieron y consolidaron:
 - empaquetado PyInstaller;
 - instalador Inno Setup;
 - actualización automática desde GitHub;
+- actualización autorizada mediante botones dentro de la aplicación;
+- resumen, visor integrado y checklist documental por proceso;
+- bandeja de pendientes con asociación posterior por radicado o placa;
 - documentación y galería de presentación.
 - guion de capacitación independiente y constancia de pruebas reales.
 

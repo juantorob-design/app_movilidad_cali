@@ -51,7 +51,7 @@ st.info(
 )
 
 metricas = [
-    ("Módulos integrados", 7),
+    ("Versión operativa", "1.1.0"),
     ("Columnas de BD_DESV", 21),
     ("Desenlaces válidos", 3),
     ("Formatos de entrada", 4),
@@ -89,6 +89,16 @@ with tab_resumen:
         st.success("Metadatos conservados al actualizar")
         st.success("Menos duplicados en Drive y Sheets")
         st.success("Distribución controlada por roles")
+        st.success("Pendientes visibles y reubicables")
+
+    st.subheader("Qué cambió en la versión 1.1.0")
+    st.markdown(
+        "- Visor del PDF dentro del registro, antes de guardar.\n"
+        "- Resumen de archivos, campos detectados y destino previsto.\n"
+        "- Checklist automático según el desenlace del expediente.\n"
+        "- Bandeja de pendientes para documentos sin fecha de petición.\n"
+        "- Asociación posterior por radicado o placa y unión al expediente."
+    )
 
 with tab_capacitacion:
     st.subheader("Guion de capacitación")
@@ -99,21 +109,29 @@ with tab_capacitacion:
         pendientes hasta que el Super Administrador asigne rol y estado activo.
 
         #### 2. Registro de entrada
-        Cargue la petición y sus anexos, verifique radicado, placa y fecha, complete
-        los campos administrativos y seleccione el desenlace correspondiente.
+        Cargue la petición o cualquier anexo. Revise el visor integrado, el resumen
+        de lectura, el destino previsto y los datos que se copiarán al formulario.
+        Complete solo los campos que el documento no permita leer automáticamente.
 
         #### 3. Regla documental principal
         El año de Drive siempre sale de la fecha de creación de la petición. Un
-        anexo suelto exige radicado, fecha de petición y placa; queda identificado
-        como pendiente de petición.
+        anexo puede llegar sin fecha propia: si el expediente existe, reutiliza la
+        fecha guardada; si todavía no existe, queda en `PDFS Escaneados/Pendientes`
+        identificado por radicado o placa.
 
         #### 4. Revisión de resultados
-        Confirme los documentos faltantes, la carpeta anual de Drive, el PDF
-        unificado y la fila relacionada en Google Sheets.
+        Confirme el checklist de Solicitud, Recurso, Resolución, Notificación,
+        Desistimiento o Constancia de ejecutoria. Revise la carpeta de destino,
+        el PDF unificado y la fila relacionada en Google Sheets.
 
-        #### 5. Consulta y soporte
-        Busque por radicado, placa o fecha. Use el Buzón de Mensajes para soporte;
-        la campana muestra pendientes de activación, descargas y soporte.
+        #### 5. Pendientes y consulta
+        En Consulta & Archivo revise la bandeja de PDF pendientes. Cuando aparezca
+        la petición principal, el sistema puede mover los anexos a la carpeta anual,
+        incorporarlos al expediente y reconstruir el PDF completo.
+
+        #### 6. Actualización
+        Si hay una versión nueva, seleccione `Actualizar ahora` para autorizarla o
+        `Más tarde` para posponerla. No se descarga el instalador sin autorización.
         """
     )
     st.warning(
@@ -125,11 +143,12 @@ with tab_flujo:
     st.subheader("Flujo funcional para explicar en la exposición")
     pasos = [
         ("1. Capturar", "Se cargan PDF, PNG, JPG o JPEG."),
-        ("2. Detectar", "Se extraen radicado, placa, fecha y metadatos disponibles."),
-        ("3. Clasificar", "Se identifica recurso, no recurso o desistimiento."),
-        ("4. Organizar", "Se ordenan documentos y se genera el PDF unificado."),
-        ("5. Sincronizar", "Drive conserva documentos y Sheets actualiza metadatos."),
-        ("6. Consultar", "El expediente se busca por radicado, placa o fecha."),
+        ("2. Leer y revisar", "Se extraen datos, se muestra el visor y el destino previsto."),
+        ("3. Clasificar", "Se identifica recurso, sin recurso o desistimiento."),
+        ("4. Validar", "El checklist muestra documentos presentes y faltantes."),
+        ("5. Organizar", "Drive guarda por año o en Pendientes y genera el PDF unificado."),
+        ("6. Sincronizar", "Sheets conserva los campos completos y sus enlaces."),
+        ("7. Consultar", "El expediente y los pendientes se buscan por radicado o placa."),
     ]
     for title, description in pasos:
         st.markdown(
@@ -177,10 +196,13 @@ with tab_trabajo:
         "Conversión de imágenes a PDF.",
         "Separación heurística, clasificación y unión ordenada de expedientes.",
         "Prevención de duplicados mediante nombre y huella de contenido.",
+        "Checklist por proceso y estado documental visible.",
+        "Resumen y visor integrado antes de guardar cada carga.",
+        "Bandeja de pendientes y asociación posterior por radicado o placa.",
         "Integración de BD_DESV y DATOS con las 21 columnas reales.",
         "Preservación de datos históricos al anexar documentos.",
         "Instalador Windows con PyInstaller e Inno Setup.",
-        "Actualizador desde GitHub Raw y release 1.0.5.",
+        "Actualizador autorizado desde GitHub Raw y release 1.1.0.",
         "Pruebas de sintaxis, dependencias, servidor, ejecutable e instalador.",
         "Prueba real de Google Sheets: escritura, lectura, actualización y eliminación controlada.",
         "Corrección de escritura por fila exacta para evitar desplazamientos de columnas.",
