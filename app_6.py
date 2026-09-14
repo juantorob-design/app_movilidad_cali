@@ -69,10 +69,13 @@ _ocr_engine = None
 OCR_MAX_PAGES = 5
 
 try:
-    from updater import check_for_updates
+    from updater import obtener_actualizacion_disponible, download_and_apply_update
 except ImportError:
-    def check_for_updates():
-        pass
+    def obtener_actualizacion_disponible():
+        return None
+
+    def download_and_apply_update(download_url):
+        return None
 
 load_dotenv()
 
@@ -147,10 +150,10 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# --- VERIFICACIÓN DE ACTUALIZACIONES EN SEGUNDO PLANO ---
+# --- VERIFICACIÓN DE ACTUALIZACIONES ---
 if 'updater_checked' not in st.session_state:
     st.session_state.updater_checked = True
-    threading.Thread(target=check_for_updates, daemon=True).start()
+    st.session_state.actualizacion_disponible = obtener_actualizacion_disponible()
 
 SUPER_ADMIN_EMAIL = "juan.torob@cun.edu.co"
 SUPABASE_URL = os.environ.get(
@@ -228,6 +231,12 @@ DOCUMENTOS_REQUERIDOS_POR_CASO = {
     "Con recurso": {"Solicitud", "Resolución", "Notificación", "Recurso"},
     "Sin recurso": {"Solicitud", "Resolución", "Notificación", "Constancia de ejecutoria"},
     "Desistimiento": {"Solicitud", "Desistimiento"},
+}
+
+DOCUMENTOS_BASE_POR_CASO = {
+    "Con recurso": ("Solicitud", "Resolución", "Notificación", "Recurso"),
+    "Sin recurso": ("Solicitud", "Resolución", "Notificación", "Constancia de ejecutoria"),
+    "Desistimiento": ("Solicitud", "Desistimiento"),
 }
 
 
@@ -974,6 +983,37 @@ def carpeta_drive_para_expediente(service, fecha, radicado, placa, ubicacion):
     return buscar_o_crear_carpeta_drive(service, carpeta_anual_id, nombre)
 
 
+def carpeta_drive_para_pendientes(service):
+    """Obtiene la bandeja donde se conservan anexos sin fecha de petición."""
+    escaneados_id = buscar_o_crear_carpeta_drive(
+        service,
+        DRIVE_FOLDER_ID,
+        DRIVE_SCANNED_FOLDER_NAME,
+    )
+    if not escaneados_id:
+        return None
+    return buscar_o_crear_carpeta_drive(service, escaneados_id, "Pendientes")
+
+
+def mover_archivo_drive(service, file_id, carpeta_destino_id):
+    """Mueve un archivo pendiente sin descargarlo ni volverlo a subir."""
+    if not service or not file_id or not carpeta_destino_id:
+        return False
+    try:
+        actual = service.files().get(fileId=file_id, fields="parents").execute()
+        padres = ",".join(actual.get("parents", []))
+        service.files().update(
+            fileId=file_id,
+            addParents=carpeta_destino_id,
+            removeParents=padres,
+            fields="id,parents,webViewLink",
+        ).execute()
+        return True
+    except Exception as error:
+        st.warning(f"No fue posible mover el pendiente al expediente: {error}")
+        return False
+
+
 def huella_contenido(contenido):
     return hashlib.sha256(contenido).hexdigest()
 
@@ -1368,6 +1408,33 @@ def documentos_faltantes(registro):
         if documento.get("tipo_documento")
     }
     return sorted(esperados - anexados)
+
+
+def documentos_requeridos_por_caso(tipo_caso, documentos_adicionales=None):
+    requeridos = set(DOCUMENTOS_REQUERIDOS_POR_CASO.get(tipo_caso, set()))
+    requeridos.update(documentos_adicionales or [])
+    return sorted(requeridos)
+
+
+def renderizar_checklist_documental(tipo_caso, documentos_presentes):
+    """Muestra el checklist del proceso y sus documentos detectados."""
+    requeridos = documentos_requeridos_por_caso(tipo_caso)
+    presentes = set(documentos_presentes or [])
+    faltantes = [nombre for nombre in requeridos if nombre not in presentes]
+    st.markdown("#### Checklist documental")
+    st.caption(f"Proceso seleccionado: **{tipo_caso}**")
+    columnas = st.columns(2)
+    for indice, documento in enumerate(requeridos):
+        icono = "✅" if documento in presentes else "⬜"
+        texto = f"{icono} {documento}"
+        if faltantes and documento in faltantes:
+            columnas[indice % 2].warning(texto)
+        else:
+            columnas[indice % 2].success(texto)
+    if faltantes:
+        st.warning("Faltan documentos: " + ", ".join(faltantes))
+    else:
+        st.success("Checklist completo para este proceso.")
 
 
 def mostrar_documento_en_aplicacion(contenido, nombre, solo_lectura=False):
@@ -1792,6 +1859,7 @@ def guardar_local_json(data):
             "expedientes": data,
             "usuarios": st.session_state.get("usuarios", {}),
             "mensajes_soporte": st.session_state.get("mensajes_soporte", []),
+            "pendientes": st.session_state.get("pendientes", {}),
         }
         with open(LOCAL_DB_FILE, 'w', encoding='utf-8') as f:
             json.dump(contenido, f, ensure_ascii=False, indent=4)
@@ -1813,6 +1881,7 @@ def cargar_base_datos_inicial(service):
                         "mensajes_soporte",
                         [],
                     )
+                    st.session_state.pendientes = raw_data.get("pendientes", {})
                 else:
                     db_cargada = raw_data
                     st.session_state.mensajes_soporte = []
@@ -2062,6 +2131,8 @@ if 'db_expedientes' not in st.session_state or 'usuarios' not in st.session_stat
     st.session_state.usuarios = usr_data
 if "mensajes_soporte" not in st.session_state:
     st.session_state.mensajes_soporte = []
+if "pendientes" not in st.session_state:
+    st.session_state.pendientes = {}
 
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
@@ -2490,6 +2561,42 @@ if not cuenta_activa(datos_usuario):
         cerrar_sesion()
     st.stop()
 
+actualizacion = st.session_state.get("actualizacion_disponible")
+if actualizacion:
+    with st.container(border=True):
+        st.warning(
+            f"Hay una nueva versión disponible: **{actualizacion['version']}**"
+        )
+        st.caption(actualizacion.get("changelog", "Sin notas de versión."))
+        actualizar_col, despues_col = st.columns([1, 1])
+        with actualizar_col:
+            autorizar_actualizacion = st.button(
+                "Actualizar ahora",
+                type="primary",
+                key="autorizar_actualizacion",
+                width="stretch",
+            )
+        with despues_col:
+            posponer_actualizacion = st.button(
+                "Más tarde",
+                key="posponer_actualizacion",
+                width="stretch",
+            )
+        if posponer_actualizacion:
+            st.session_state.actualizacion_disponible = None
+            st.rerun()
+        if autorizar_actualizacion:
+            if not getattr(sys, "frozen", False):
+                st.info(
+                    "La actualización automática está disponible en el instalador "
+                    "de Windows. Este entorno de desarrollo no puede reemplazarse."
+                )
+            elif not actualizacion.get("download_url"):
+                st.error("La versión nueva no tiene una URL de instalador válida.")
+            else:
+                with st.spinner("Descargando y preparando la actualización..."):
+                    download_and_apply_update(actualizacion["download_url"])
+
 rol_actual = datos_usuario.get("rol", "Sin Rol Asignado")
 estado_actual = datos_usuario.get("estado", "Pendiente")
 
@@ -2680,7 +2787,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
         datos_carga = {}
         datos_sheet = {}
         tipos_carga = set()
-        fecha_carga = datetime.date.today()
+        fecha_carga = None
         if archivos_canvas:
             opciones_orden = [
                 f"{indice + 1:02d} - {archivo.name}"
@@ -2739,6 +2846,111 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 st.info(f"Desenlace detectado: {next(iter(tipos_carga))}")
             elif len(tipos_carga) > 1:
                 st.warning("Se detectaron varios desenlaces; revisa que pertenezcan al mismo expediente.")
+            tipo_checklist = next(iter(tipos_carga), "Detección automática")
+            if tipo_checklist in DOCUMENTOS_BASE_POR_CASO:
+                renderizar_checklist_documental(
+                    tipo_checklist,
+                    [tipo_documento] if archivos_canvas else [],
+                )
+            campos_detectados = sorted(
+                campo.replace("_", " ").capitalize()
+                for campo, valor in datos_carga.items()
+                if valor
+            )
+            with st.container(border=True):
+                st.markdown("#### Resumen de la carga")
+                resumen_col1, resumen_col2, resumen_col3 = st.columns(3)
+                resumen_col1.metric("Archivos recibidos", len(archivos_canvas))
+                resumen_col2.metric("Campos leídos", len(campos_detectados))
+                resumen_col3.metric(
+                    "Desenlace",
+                    next(iter(tipos_carga), "Por confirmar"),
+                )
+                st.write(
+                    "✅ Archivo recibido y analizado. "
+                    "Los datos encontrados se cargaron en el formulario."
+                )
+                if campos_detectados:
+                    st.caption(
+                        "Campos que se intentarán registrar: "
+                        + ", ".join(campos_detectados)
+                    )
+                else:
+                    st.warning(
+                        "No se encontraron datos legibles automáticamente. "
+                        "Completa los campos manualmente antes de guardar."
+                    )
+                st.caption(
+                    "Antes de guardar, revisa los campos resaltados y confirma "
+                    "que la información corresponda al expediente."
+                )
+            st.markdown("#### Vista previa y destino del documento")
+            destino_radicado = datos_carga.get("radicado_padre", "")
+            destino_placa = datos_carga.get("placa", "")
+            destino_fecha = datos_carga.get("fecha_solicitud", "")
+            expediente_vista = st.session_state.db_expedientes.get(
+                str(destino_radicado).strip()
+            )
+            if expediente_vista:
+                destino_fecha = destino_fecha or expediente_vista.get("fecha_solicitud", "")
+                destino_placa = destino_placa or expediente_vista.get("placa", "")
+            if destino_fecha:
+                try:
+                    anio_destino = datetime.date.fromisoformat(
+                        str(destino_fecha)
+                    ).year
+                    destino_texto = (
+                        f"PDFS Escaneados/{anio_destino}/"
+                        f"{destino_radicado or 'RADICADO_PENDIENTE'}_"
+                        f"{destino_placa or 'PLACA_PENDIENTE'}"
+                    )
+                except ValueError:
+                    destino_texto = "Carpeta anual pendiente de confirmar la fecha de petición"
+            else:
+                destino_texto = (
+                    "PDFS Escaneados/Pendientes/ "
+                    f"{destino_radicado or destino_placa or 'IDENTIFICADOR_PENDIENTE'}"
+                )
+            vista_col, destino_col = st.columns([1.35, 1])
+            with destino_col:
+                st.info(f"**Destino previsto**\n\n`{destino_texto}`")
+                if expediente_vista:
+                    st.success("Este radicado ya tiene un expediente registrado.")
+                    if expediente_vista.get("drive_folder"):
+                        st.markdown(
+                            f"[Abrir carpeta actual del expediente]({expediente_vista['drive_folder']})"
+                        )
+                    if expediente_vista.get("pdf_unificado"):
+                        st.markdown(
+                            f"[Abrir PDF completo actual]({expediente_vista['pdf_unificado']})"
+                        )
+                else:
+                    st.caption(
+                        "El destino final se confirmará al guardar, después de "
+                        "validar el radicado, la placa y la fecha."
+                    )
+            with vista_col:
+                for indice, archivo in enumerate(archivos_canvas):
+                    with st.expander(
+                        f"Ver archivo {indice + 1}: {archivo.name}",
+                        expanded=indice == 0,
+                    ):
+                        contenido_vista = archivo.getvalue()
+                        nombre_vista = archivo.name
+                        if not nombre_vista.lower().endswith(".pdf"):
+                            try:
+                                contenido_vista = convertir_imagen_a_pdf(
+                                    contenido_vista,
+                                    nombre_vista,
+                                )
+                                nombre_vista = f"{os.path.splitext(nombre_vista)[0]}.pdf"
+                            except ValueError:
+                                pass
+                        mostrar_documento_en_aplicacion(
+                            contenido_vista,
+                            nombre_vista,
+                            solo_lectura=True,
+                        )
             registro_sheet = buscar_registro_en_sheets(
                 sheets_service,
                 datos_carga.get("radicado_padre", ""),
@@ -2931,9 +3143,43 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
             btn_guardar = st.form_submit_button("Guardar y Sincronizar Datos", width="stretch")
 
         if btn_guardar:
-            if (not radicado_padre or not matricula_qx) and not archivos_canvas:
-                st.error("Indica el radicado y la placa, o carga un PDF para intentar detectarlos.")
+            if not radicado_padre and not archivos_canvas:
+                st.error(
+                    "Indica el radicado del expediente para poder asociar el registro."
+                )
             else:
+                if sheets_service and not datos_sheet:
+                    registro_existente_sheet = buscar_registro_en_sheets(
+                        sheets_service,
+                        radicado_padre.strip(),
+                        matricula_qx.strip(),
+                    )
+                    datos_sheet = datos_registro_sheet(registro_existente_sheet)
+                if not radicado_padre.strip() and datos_sheet.get("radicado_padre"):
+                    radicado_padre = datos_sheet["radicado_padre"]
+                if not radicado_padre.strip() and matricula_qx.strip():
+                    expediente_por_placa = next(
+                        (
+                            expediente
+                            for expediente in st.session_state.db_expedientes.values()
+                            if str(expediente.get("placa", "")).strip().upper()
+                            == matricula_qx.strip().upper()
+                        ),
+                        None,
+                    )
+                    if expediente_por_placa:
+                        radicado_padre = expediente_por_placa.get("radicado_padre", "")
+                expediente_previo = st.session_state.db_expedientes.get(
+                    radicado_padre.strip()
+                )
+                fecha_expediente = (
+                    (expediente_previo or {}).get("fecha_solicitud")
+                    or datos_sheet.get("fecha_solicitud", "")
+                )
+                placa_expediente = (
+                    (expediente_previo or {}).get("placa")
+                    or datos_sheet.get("placa", "")
+                )
                 existente = st.session_state.db_expedientes.get(radicado_padre)
                 if existente:
                     total_expedientes = existente.get("id") or siguiente_numero_expediente()
@@ -2946,14 +3192,20 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 documentos_detectados = []
                 archivos_ordenados = archivos_canvas or []
                 carpeta_expediente_drive_id = None
+                fecha_registro_previa = fecha_solicitud or fecha_expediente
                 if drive_service:
-                    carpeta_expediente_drive_id = carpeta_drive_para_expediente(
-                        drive_service,
-                        str(fecha_solicitud),
-                        radicado_padre,
-                        matricula_qx,
-                        f"Expediente-completo_{cod_ub}",
-                    )
+                    if fecha_registro_previa:
+                        carpeta_expediente_drive_id = carpeta_drive_para_expediente(
+                            drive_service,
+                            str(fecha_registro_previa),
+                            radicado_padre,
+                            matricula_qx or placa_expediente,
+                            f"Expediente-completo_{cod_ub}",
+                        )
+                    else:
+                        carpeta_expediente_drive_id = carpeta_drive_para_pendientes(
+                            drive_service
+                        )
                 if archivos_canvas and orden_archivos:
                     indices = [
                         int(opcion.split(" - ", 1)[0]) - 1
@@ -3022,8 +3274,8 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         nombre_drive = nombre_documento_expediente(
                             datos_pdf.get("radicado_padre") or radicado_padre,
                             datos_pdf.get("placa") or matricula_qx,
-                            str(fecha_solicitud),
-                            f"{tipo_documento_final}_{cod_ub}",
+                            "PENDIENTE",
+                            tipo_documento_final,
                             os.path.splitext(nombre_original)[1] or ".pdf",
                         )
                         if datos_pdf:
@@ -3079,6 +3331,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             "tipo_documento": tipo_documento_final,
                             "tipo_caso_detectado": tipo_detectado,
                             "huella": huella,
+                            "pendiente": not bool(fecha_registro_previa),
                         })
 
                     pdfs_cargados = [
@@ -3205,8 +3458,9 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         "Con recurso, Sin recurso o Desistimiento."
                     )
                     st.stop()
-                documentos_esperados = documentos_esperados or sorted(
-                    DOCUMENTOS_REQUERIDOS_POR_CASO[tipo_caso_final]
+                documentos_esperados = documentos_requeridos_por_caso(
+                    tipo_caso_final,
+                    documentos_esperados,
                 )
                 for documento in canvas_list:
                     for campo, valor in documento.get("metadatos_pdf", {}).items():
@@ -3216,27 +3470,40 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     if peticion_incluida
                     else radicado_padre.strip()
                 )
-                placa_registro = datos_detectados.get("placa", matricula_qx)
+                placa_registro = datos_detectados.get("placa") or matricula_qx
                 # La fecha de la petición es la única fuente para el año documental.
-                fecha_registro = str(fecha_solicitud)
-                if not radicado_registro or not placa_registro:
+                placa_registro = placa_registro or placa_expediente
+                fecha_registro = str(
+                    fecha_solicitud
+                    or datos_detectados.get("fecha_solicitud")
+                    or fecha_expediente
+                )
+                if not radicado_registro:
                     st.error(
-                        "No fue posible detectar el radicado y la placa. "
-                        "Completa manualmente los campos indicados."
+                        "No fue posible asociar el archivo a un expediente. "
+                        "Indica el radicado padre."
+                    )
+                    st.stop()
+                if not placa_registro:
+                    st.error(
+                        "Este expediente aún no tiene placa. Completa la placa "
+                        "para crear el expediente inicial; los anexos posteriores "
+                        "sí pueden reutilizar la placa ya registrada."
                     )
                     st.stop()
                 if archivos_canvas and not peticion_incluida:
-                    if not radicado_padre.strip() or not str(fecha_solicitud).strip():
+                    if not radicado_padre.strip() or not fecha_registro.strip():
                         st.error(
                             "Este archivo no contiene la petición principal. "
-                            "Debes indicar manualmente el radicado y la fecha de creación "
-                            "de la petición para clasificarlo en Drive."
+                            "Debes indicar el radicado. La fecha de la petición "
+                            "se reutiliza desde el expediente existente."
                         )
                         st.stop()
                 existente_final = st.session_state.db_expedientes.get(radicado_registro)
                 fuente_existente = {
                     **(existente_final or {}),
                     **datos_sheet,
+                    **datos_detectados,
                 }
 
                 def valor_actual(campo, valor_nuevo=""):
@@ -3336,6 +3603,31 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     ),
                     "ultima_modificacion": str(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
                 }
+                pendientes_clave = radicado_registro.strip().upper()
+                pendientes_asociados = list(
+                    st.session_state.get("pendientes", {}).get(pendientes_clave, [])
+                )
+                if fecha_registro and pendientes_asociados:
+                    for pendiente in pendientes_asociados:
+                        if drive_service and carpeta_expediente_drive_id:
+                            mover_archivo_drive(
+                                drive_service,
+                                pendiente.get("drive_id"),
+                                carpeta_expediente_drive_id,
+                            )
+                        pendiente["pendiente"] = False
+                        pendiente["reubicado_en"] = registro_datos.get("drive_folder", "")
+                        canvas_list.append(pendiente)
+                    st.session_state.pendientes.pop(pendientes_clave, None)
+                elif canvas_list and not fecha_registro:
+                    st.session_state.pendientes.setdefault(pendientes_clave, []).extend(
+                        canvas_list
+                    )
+                    st.warning(
+                        "El documento quedó en la carpeta **Pendientes**. "
+                        "Cuando registres la petición con este radicado, "
+                        "se podrá reubicar y unir al expediente."
+                    )
                 if existente_final:
                     paginas_previas = existente_final.get("canvas_paginas", [])
                     paginas_previas = [
@@ -3381,6 +3673,27 @@ elif st.session_state.navegacion == "Consulta & Archivo":
         st.rerun()
 
     st.header("Consulta General de Expedientes")
+    pendientes = st.session_state.get("pendientes", {})
+    total_pendientes = sum(len(documentos) for documentos in pendientes.values())
+    with st.container(border=True):
+        st.subheader("Bandeja de PDF pendientes")
+        st.metric("PDF sin expediente completo", total_pendientes)
+        st.caption(
+            "Estos archivos conservan su radicado o placa y esperan la petición "
+            "principal para ser reubicados y unidos al expediente."
+        )
+        if pendientes:
+            for clave, documentos in sorted(pendientes.items()):
+                with st.expander(f"{clave} ({len(documentos)} archivo(s))"):
+                    for documento in documentos:
+                        nombre = documento.get("nombre", "Documento pendiente")
+                        enlace = documento.get("drive_url", "")
+                        if enlace:
+                            st.markdown(f"- [{nombre}]({enlace})")
+                        else:
+                            st.write(f"- {nombre}")
+        else:
+            st.success("No hay PDF pendientes de asociación.")
 
     tipo_busqueda = st.radio(
         "Tipo de búsqueda",
@@ -3440,10 +3753,18 @@ elif st.session_state.navegacion == "Consulta & Archivo":
         if exp.get("tipo_caso"):
             st.caption(f"Tipo de caso: {exp['tipo_caso']}")
         faltantes = documentos_faltantes(exp)
-        if faltantes:
+        tipo_consulta = exp.get("tipo_caso", "Detección automática")
+        if tipo_consulta in DOCUMENTOS_BASE_POR_CASO:
+            renderizar_checklist_documental(
+                tipo_consulta,
+                [
+                    documento.get("tipo_documento")
+                    for documento in exp.get("canvas_paginas", [])
+                    if documento.get("tipo_documento") != "Expediente completo"
+                ],
+            )
+        elif faltantes:
             st.warning("Documentos faltantes: " + ", ".join(faltantes))
-        elif exp.get("documentos_esperados"):
-            st.success("Expediente documental completo.")
 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Ubicación Física", exp["ubicacion"])

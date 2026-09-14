@@ -6,7 +6,7 @@ import threading
 import tempfile
 
 # Versión actual de la aplicación instalada
-CURRENT_VERSION = "1.0.9"
+CURRENT_VERSION = "1.1.0"
 
 # GitHub Raw será la fuente pública de versiones cuando el repositorio se publique.
 DEFAULT_VERSION_CHECK_URL = (
@@ -33,6 +33,27 @@ def is_newer_version(remote_ver, current_ver):
     except Exception:
         return False
 
+
+def obtener_actualizacion_disponible():
+    """Devuelve los datos de una versión nueva sin iniciar ninguna descarga."""
+    if not VERSION_CHECK_URL:
+        return None
+    try:
+        response = requests.get(VERSION_CHECK_URL, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        remote_version = data.get("version")
+        if not remote_version or not is_newer_version(remote_version, CURRENT_VERSION):
+            return None
+        return {
+            "version": str(remote_version),
+            "download_url": data.get("download_url", ""),
+            "changelog": data.get("changelog", "Sin notas de versión."),
+        }
+    except (requests.RequestException, ValueError, TypeError):
+        return None
+
+
 def check_for_updates(callback_notificacion=None):
     """
     Consulta la URL remota para verificar si existe una nueva versión.
@@ -42,22 +63,20 @@ def check_for_updates(callback_notificacion=None):
         # Updates are opt-in until the public repository URL is configured.
         return
 
-    try:
-        response = requests.get(VERSION_CHECK_URL, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            remote_version = data.get("version")
-            download_url = data.get("download_url")
-            changelog = data.get("changelog", "Sin notas de versión.")
-
-            if remote_version and is_newer_version(remote_version, CURRENT_VERSION):
-                if callback_notificacion:
-                    callback_notificacion(remote_version, download_url, changelog)
-                else:
-                    prompt_user_to_update(remote_version, download_url, changelog)
-    except Exception as e:
-        # Silencia errores de conexión para no interferir con el inicio del sistema
-        pass
+    actualizacion = obtener_actualizacion_disponible()
+    if actualizacion:
+        if callback_notificacion:
+            callback_notificacion(
+                actualizacion["version"],
+                actualizacion["download_url"],
+                actualizacion["changelog"],
+            )
+        else:
+            prompt_user_to_update(
+                actualizacion["version"],
+                actualizacion["download_url"],
+                actualizacion["changelog"],
+            )
 
 def prompt_user_to_update(remote_version, download_url, changelog):
     """Muestra una ventana emergente de confirmación utilizando la API de Windows/Tkinter en hilo seguro."""
