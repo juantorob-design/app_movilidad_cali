@@ -66,7 +66,7 @@ except ImportError:
     RapidOCR = None
 
 _ocr_engine = None
-OCR_MAX_PAGES = 5
+OCR_MAX_PAGES = 8
 
 try:
     from updater import obtener_actualizacion_disponible, download_and_apply_update
@@ -1092,7 +1092,9 @@ def extraer_texto_pdf(contenido):
             )
         )
         if texto and texto_util:
-            return texto
+            datos_basicos = extraer_datos_pdf(contenido, texto=texto)
+            if len(datos_basicos) >= 2:
+                return texto
     except Exception:
         texto = ""
     if fitz is None or RapidOCR is None:
@@ -2974,6 +2976,31 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     )
                 except ValueError:
                     st.warning("La fecha detectada no pudo convertirse; debes verificarla.")
+
+        campos_formulario = {
+            f"radicado_padre_{carga_id}": datos_carga.get("radicado_padre", ""),
+            f"fecha_solicitud_{carga_id}": fecha_carga,
+            f"matricula_qx_{carga_id}": datos_carga.get("placa", ""),
+            f"resolucion_{carga_id}": datos_carga.get("resolucion", ""),
+            f"empresa_{carga_id}": datos_carga.get("empresa", ""),
+            f"nit_{carga_id}": datos_carga.get("nit", ""),
+            f"propietario_{carga_id}": datos_carga.get("propietario", ""),
+            f"cedula_{carga_id}": datos_carga.get("cedula", ""),
+            f"direccion_empresa_{carga_id}": datos_carga.get("direccion_empresa", ""),
+            f"correo_{carga_id}": datos_carga.get("correo", ""),
+            f"funcionario_{carga_id}": datos_carga.get(
+                "funcionario",
+                datos_usuario.get("alias", ""),
+            ),
+            f"observacion_{carga_id}": datos_carga.get("observacion", ""),
+            f"tipo_caso_{carga_id}": next(
+                iter(tipos_carga),
+                "Detección automática",
+            ),
+        }
+        for clave, valor in campos_formulario.items():
+            if valor not in (None, "") and clave not in st.session_state:
+                st.session_state[clave] = valor
 
         st.subheader("2. Confirmar y completar el expediente")
         with st.form("form_registro_canvas"):

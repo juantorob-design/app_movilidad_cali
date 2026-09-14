@@ -134,6 +134,27 @@ with tab_capacitacion:
         `Más tarde` para posponerla. No se descarga el instalador sin autorización.
         """
     )
+    st.subheader("Ejemplo visible: proceso de Desistimiento")
+    ejemplo_col1, ejemplo_col2 = st.columns(2)
+    with ejemplo_col1:
+        st.markdown(
+            """
+            **Caso:** un ciudadano desiste de la solicitud.
+
+            1. Cargar la petición o el documento de desistimiento.
+            2. Revisar el radicado, placa y fecha detectados.
+            3. Seleccionar **Desistimiento** si el texto no lo identifica.
+            4. Confirmar el tipo documental correspondiente.
+            """
+        )
+    with ejemplo_col2:
+        st.success("✅ Solicitud")
+        st.success("✅ Desistimiento")
+        st.warning("⬜ Resolución o acto correspondiente si aplica")
+        st.caption(
+            "El checklist permite ver inmediatamente qué está presente y qué "
+            "debe completarse antes de cerrar el expediente."
+        )
     st.warning(
         "Para una demostración use datos controlados o anonimizados. No exponga "
         "credenciales, tokens ni expedientes reales."
