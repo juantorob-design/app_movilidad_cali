@@ -25,6 +25,7 @@ import secrets
 import tempfile
 import threading
 import webbrowser
+from functools import lru_cache
 from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import quote, urlencode, urlparse, parse_qs
@@ -53,6 +54,19 @@ try:
     from PIL import Image
 except ImportError:
     Image = None
+
+try:
+    import fitz
+except ImportError:
+    fitz = None
+
+try:
+    from rapidocr_onnxruntime import RapidOCR
+except ImportError:
+    RapidOCR = None
+
+_ocr_engine = None
+OCR_MAX_PAGES = 5
 
 try:
     from updater import check_for_updates
@@ -945,6 +959,21 @@ def carpeta_drive_para_fecha(service, fecha):
         return None
 
 
+def carpeta_drive_para_expediente(service, fecha, radicado, placa, ubicacion):
+    """Obtiene la carpeta estable AÑO/EXPEDIENTE dentro de PDFS Escaneados."""
+    carpeta_anual_id = carpeta_drive_para_fecha(service, fecha)
+    if not carpeta_anual_id:
+        return None
+    nombre = nombre_documento_expediente(
+        radicado,
+        placa,
+        str(fecha),
+        ubicacion,
+        "",
+    )
+    return buscar_o_crear_carpeta_drive(service, carpeta_anual_id, nombre)
+
+
 def huella_contenido(contenido):
     return hashlib.sha256(contenido).hexdigest()
 
@@ -1003,27 +1032,110 @@ def descargar_archivo_drive(service, file_id):
     return buffer.getvalue()
 
 
-def extraer_datos_pdf(contenido):
-    """Extrae metadatos frecuentes del texto de un PDF, sin depender de su nombre."""
+@lru_cache(maxsize=8)
+def extraer_texto_pdf(contenido):
+    """Devuelve texto digital y usa OCR local como respaldo para PDFs escaneados."""
     if PdfReader is None:
-        return {}
+        return ""
     try:
         reader = PdfReader(io.BytesIO(contenido))
-        texto = "\n".join((pagina.extract_text() or "") for pagina in reader.pages)
+        texto = " ".join(
+            (pagina.extract_text() or "").replace("\xa0", " ")
+            for pagina in reader.pages
+        )
+        texto = normalizar_texto_documento(texto)
+        texto_util = bool(
+            re.search(
+                r"\b(?:radicado|radicaci[oó]n|placa|matr[ií]cula|solicitud|petici[oó]n)\b",
+                texto,
+                flags=re.IGNORECASE,
+            )
+        )
+        if texto and texto_util:
+            return texto
     except Exception:
+        texto = ""
+    if fitz is None or RapidOCR is None:
+        return texto
+    try:
+        global _ocr_engine
+        if _ocr_engine is None:
+            _ocr_engine = RapidOCR()
+        documento = fitz.open(stream=contenido, filetype="pdf")
+        paginas = []
+        for indice, pagina in enumerate(documento):
+            if indice >= OCR_MAX_PAGES:
+                break
+            pixmap = pagina.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+            resultado, _ = _ocr_engine(pixmap.tobytes("png"))
+            if resultado:
+                paginas.append(" ".join(str(elemento[1]) for elemento in resultado))
+        documento.close()
+        return normalizar_texto_documento(" ".join(paginas))
+    except Exception:
+        return texto
+
+
+def normalizar_texto_documento(texto):
+    return " ".join(str(texto or "").replace("\xa0", " ").split())
+
+
+def combinar_datos_detectados(destino, nuevos):
+    """Conserva el primer valor útil y evita que un anexo borre otro dato."""
+    for campo, valor in (nuevos or {}).items():
+        if valor and not destino.get(campo):
+            destino[campo] = valor
+    return destino
+
+
+def extraer_datos_pdf(contenido, texto=None):
+    """Extrae metadatos de PDFs digitales; devuelve vacío si es un escaneo sin OCR."""
+    texto = normalizar_texto_documento(
+        extraer_texto_pdf(contenido) if texto is None else texto
+    )
+    if not texto:
         return {}
-    texto = " ".join(texto.replace("\xa0", " ").split())
     patrones = {
         "radicado_padre": [
-            r"\b(?:rad|radicado|radicaci[oó]n)\s*[:.#-]?\s*(\d{8,22})\b",
-            r"(?:radicado\s*(?:padre|principal)|rad\.?\s*padre|orfeo)\s*[:#-]?\s*([A-Z0-9][A-Z0-9./-]{4,})",
+            r"\b(?:rad|radicado|radicaci[oó]n|orfeo)\s*(?:padre|principal)?\s*[:.#\-]?\s*([A-Z0-9][A-Z0-9./\-]{7,})\b",
+            r"\b(20\d{2}\d{14,18})\b",
         ],
         "placa": [
-            r"(?:placa|matr[ií]cula|matricula)\s*[:#-]?\s*([A-Z]{3}\s*[-]?\s*\d{3})",
+            r"(?:placa|placas|matr[ií]cula|matricula|veh[ií]culo)\s*[:#\-]?\s*([A-Z]{3}\s*[-]?\s*\d{3})\b",
         ],
         "fecha_solicitud": [
-            r"(?:fecha\s*(?:de\s*)?(?:creaci[oó]n|radicaci[oó]n|solicitud))\s*[:#-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+            r"(?:fecha\s*(?:de\s*)?(?:creaci[oó]n|radicaci[oó]n|solicitud|recibido))\s*[:#\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+            r"\b(\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\s+de\s+20\d{2})\b",
         ],
+        "correo": [
+            r"\b([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})\b",
+        ],
+        "nit": [
+            r"\b(?:NIT|n\.i\.t\.)\s*[:#\-]?\s*([0-9]{6,12}(?:\s*[\-–]\s*[0-9])?)\b",
+        ],
+        "cedula": [
+            r"\b(?:c[eé]dula|c\.c\.|identificaci[oó]n)\s*[:#\-]?\s*([0-9][0-9.\s]{5,14})\b",
+        ],
+        "empresa": [
+            r"\bempresa\s*[:#\-]\s*([^|]{3,100}?)(?=\s+(?:NIT|propietario|placa|radicado|resoluci[oó]n|correo)\b|$)",
+        ],
+        "propietario": [
+            r"\bpropietario(?:\s+del\s+veh[ií]culo)?\s*[:#\-]\s*([^|]{3,100}?)(?=\s+(?:c[eé]dula|CC|placa|direcci[oó]n|resoluci[oó]n|correo|NIT)\b|$)",
+        ],
+        "direccion_empresa": [
+            r"\bdirecci[oó]n\s+(?:de\s+)?empresa\s*[:#\-]\s*([^|]{5,150}?)(?=\s+(?:propietario|NIT|radicado)\b|$)",
+        ],
+        "funcionario": [
+            r"\bfuncionario\s+(?:que\s+)?desvincula\s*[:#\-]\s*([^|]{3,100}?)(?=\s+(?:fecha|observaci[oó]n|estado)\b|$)",
+        ],
+        "resolucion": [
+            r"\b(?:resoluci[oó]n|acto\s+administrativo)\s*(?:No\.?|N[°ºo]\.?)?\s*[:#\-]?\s*([A-Z0-9./\-]{4,40})\b",
+        ],
+    }
+    meses = {
+        "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5,
+        "junio": 6, "julio": 7, "agosto": 8, "septiembre": 9,
+        "setiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12,
     }
     datos = {}
     for campo, opciones in patrones.items():
@@ -1036,15 +1148,29 @@ def extraer_datos_pdf(contenido):
                 if campo == "placa":
                     valor = re.sub(r"[\s-]", "", valor).upper()
                 elif campo == "fecha_solicitud":
-                    partes = re.split(r"[/-]", valor)
-                    if len(partes) == 3:
-                        if len(partes[0]) == 4:
-                            valor = "-".join(partes)
-                        else:
-                            dia, mes, anio = partes
-                            if len(anio) == 2:
-                                anio = "20" + anio
-                            valor = f"{anio}-{mes.zfill(2)}-{dia.zfill(2)}"
+                    fecha_texto = valor.lower()
+                    fecha_larga = re.fullmatch(
+                        r"(\d{1,2})\s+de\s+([a-záéíóú]+)\s+de\s+(20\d{2})",
+                        fecha_texto,
+                    )
+                    if fecha_larga:
+                        dia, mes, anio = fecha_larga.groups()
+                        valor = f"{anio}-{meses.get(mes, 0):02d}-{int(dia):02d}"
+                    else:
+                        partes = re.split(r"[/-]", valor)
+                        if len(partes) == 3:
+                            if len(partes[0]) == 4:
+                                valor = "-".join(partes)
+                            else:
+                                dia, mes, anio = partes
+                                if len(anio) == 2:
+                                    anio = "20" + anio
+                                valor = f"{anio}-{mes.zfill(2)}-{dia.zfill(2)}"
+                elif campo in {
+                    "correo", "nit", "cedula", "empresa", "propietario",
+                    "direccion_empresa", "funcionario", "resolucion",
+                }:
+                    valor = re.sub(r"\s+", " ", valor).strip()
                 datos[campo] = valor
                 break
     return datos
@@ -1083,26 +1209,48 @@ def convertir_imagen_a_pdf(contenido, nombre):
         raise ValueError(f"No se pudo convertir {nombre} a PDF: {error}") from error
 
 
+@lru_cache(maxsize=4)
 def separar_pdf_completo(contenido, tipo_fallback):
     """Quita páginas vacías y separa un PDF por bloques documentales detectables."""
     if PdfReader is None or PdfWriter is None:
         return [{"contenido": contenido, "tipo": tipo_fallback, "paginas": 0}]
     try:
         lector = PdfReader(io.BytesIO(contenido))
+        documento_visual = fitz.open(stream=contenido, filetype="pdf") if fitz else None
+        tiene_texto_digital = any(
+            len(" ".join((pagina.extract_text() or "").split())) >= 8
+            for pagina in lector.pages
+        )
         grupos = []
         actual = None
-        for pagina in lector.pages:
+        for numero_pagina, pagina in enumerate(lector.pages):
             texto = " ".join((pagina.extract_text() or "").split())
-            if len(texto) < 8:
+            pixmap = None
+            if documento_visual:
+                pixmap = documento_visual.load_page(numero_pagina).get_pixmap(
+                    matrix=fitz.Matrix(0.12, 0.12),
+                    alpha=False,
+                )
+            if len(texto) < 8 and pagina_pixeles_blancos(pixmap):
                 continue
+            if not tiene_texto_digital:
+                if actual is None:
+                    actual = {"tipo": tipo_fallback, "paginas": []}
+                    grupos.append(actual)
+                actual["paginas"].append(pagina)
+                continue
+            if not texto:
+                texto = extraer_texto_ocr_pixmap(pixmap)
             tipo = clasificar_tipo_documento(texto, tipo_fallback)
             if actual and actual["tipo"] == tipo:
                 actual["paginas"].append(pagina)
             else:
                 actual = {"tipo": tipo, "paginas": [pagina]}
                 grupos.append(actual)
+        if documento_visual:
+            documento_visual.close()
         if not grupos:
-            return [{"contenido": contenido, "tipo": tipo_fallback, "paginas": 0}]
+            return []
         resultado = []
         for grupo in grupos:
             escritor = PdfWriter()
@@ -1118,6 +1266,60 @@ def separar_pdf_completo(contenido, tipo_fallback):
         return resultado
     except Exception:
         return [{"contenido": contenido, "tipo": tipo_fallback, "paginas": 0}]
+
+
+def pagina_pdf_vacia(contenido, numero_pagina):
+    """Detecta hojas blancas sin OCR, usando texto y una muestra de píxeles."""
+    if fitz is None:
+        return False
+    try:
+        documento = fitz.open(stream=contenido, filetype="pdf")
+        pagina = documento.load_page(numero_pagina)
+        pixmap = pagina.get_pixmap(matrix=fitz.Matrix(0.35, 0.35), alpha=False)
+        muestras = pixmap.samples
+        if not muestras:
+            documento.close()
+            return True
+        canales = pixmap.n
+        pixeles_oscuros = 0
+        total_pixeles = len(muestras) // canales
+        for indice in range(0, len(muestras), canales):
+            if min(muestras[indice:indice + 3]) < 245:
+                pixeles_oscuros += 1
+        documento.close()
+        return total_pixeles == 0 or (pixeles_oscuros / total_pixeles) < 0.001
+    except Exception:
+        return False
+
+
+def pagina_pixeles_blancos(pixmap):
+    if pixmap is None or not pixmap.samples:
+        return True
+    canales = pixmap.n
+    total_pixeles = len(pixmap.samples) // canales
+    muestras_por_pixel = max(canales * 4, 1)
+    pixeles_oscuros = sum(
+        1
+        for indice in range(0, len(pixmap.samples), muestras_por_pixel)
+        if min(pixmap.samples[indice:indice + 3]) < 245
+    )
+    return total_pixeles == 0 or (pixeles_oscuros / max(total_pixeles // 4, 1)) < 0.001
+
+
+def extraer_texto_ocr_pixmap(pixmap):
+    """Extrae una muestra OCR de una página para clasificar su sección."""
+    if pixmap is None or RapidOCR is None:
+        return ""
+    try:
+        global _ocr_engine
+        if _ocr_engine is None:
+            _ocr_engine = RapidOCR()
+        resultado, _ = _ocr_engine(pixmap.tobytes("png"))
+        return normalizar_texto_documento(
+            " ".join(str(elemento[1]) for elemento in (resultado or []))
+        )
+    except Exception:
+        return ""
 
 
 def clasificar_tipo_documento(texto, tipo_fallback):
@@ -2453,9 +2655,17 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 index=TIPOS_DOCUMENTALES.index("Solicitud"),
                 key=f"tipo_documento_{st.session_state.form_registro_version}",
             )
+        carga_id = (
+            huella_contenido(
+                b"".join(archivo.getvalue() for archivo in archivos_canvas)
+            )[:12]
+            if archivos_canvas
+            else f"v{st.session_state.form_registro_version}"
+        )
         peticion_incluida = st.checkbox(
             "La petición principal está incluida en esta carga",
             value=tipo_documento == "Solicitud",
+            key=f"peticion_incluida_{carga_id}",
             help=(
                 "Si se carga un anexo suelto, desmarca esta opción y completa "
                 "manualmente el radicado y la fecha de creación de la petición."
@@ -2482,20 +2692,38 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 default=opciones_orden,
             )
             for archivo in archivos_canvas:
-                if archivo.name.lower().endswith(".pdf"):
-                    contenido = archivo.getvalue()
-                    datos_carga.update(extraer_datos_pdf(contenido))
-                    if PdfReader is not None:
-                        try:
-                            lector = PdfReader(io.BytesIO(contenido))
-                            texto = " ".join(
-                                pagina.extract_text() or "" for pagina in lector.pages
-                            )
-                            tipo_detectado = clasificar_tipo_caso(texto, archivo.name)
-                            if tipo_detectado:
-                                tipos_carga.add(tipo_detectado)
-                        except Exception:
-                            pass
+                contenido = archivo.getvalue()
+                contenido_analizable = contenido
+                if not archivo.name.lower().endswith(".pdf"):
+                    try:
+                        contenido_analizable = convertir_imagen_a_pdf(
+                            contenido,
+                            archivo.name,
+                        )
+                    except ValueError:
+                        contenido_analizable = b""
+                texto_archivo = normalizar_texto_documento(
+                    extraer_texto_pdf(contenido_analizable)
+                )
+                combinar_datos_detectados(
+                    datos_carga,
+                    extraer_datos_pdf(
+                        contenido_analizable,
+                        texto=texto_archivo,
+                    ),
+                )
+                coincidencia_radicado = re.search(
+                    r"(?<!\d)(\d{15,22})(?!\d)",
+                    archivo.name,
+                )
+                if coincidencia_radicado:
+                    datos_carga["radicado_padre"] = coincidencia_radicado.group(1)
+                tipo_detectado = clasificar_tipo_caso(
+                    texto_archivo,
+                    archivo.name,
+                )
+                if tipo_detectado:
+                    tipos_carga.add(tipo_detectado)
             if datos_carga:
                 st.success(
                     "Datos detectados: "
@@ -2503,8 +2731,9 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 )
             else:
                 st.warning(
-                    "No se pudieron leer automáticamente los datos del documento. "
-                    "Completa manualmente los campos marcados."
+                    "No se encontró texto seleccionable en los archivos. "
+                    "Si el PDF es un escaneo como imagen, completa los campos "
+                    "manualmente o habilita OCR en el equipo."
                 )
             if len(tipos_carga) == 1:
                 st.info(f"Desenlace detectado: {next(iter(tipos_carga))}")
@@ -2542,6 +2771,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     "Radicado Padre (Orfeo) *",
                     value=datos_carga.get("radicado_padre", ""),
                     placeholder="Se detectará desde el documento o puedes escribirlo",
+                    key=f"radicado_padre_{carga_id}",
                 ).strip()
                 if not datos_carga.get("radicado_padre"):
                     st.warning("Radicado no detectado: escríbelo manualmente.")
@@ -2555,8 +2785,13 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         if solicitante_actual in solicitante_opciones
                         else 0
                     ),
+                    key=f"solicitante_{carga_id}",
                 )
-                fecha_solicitud = st.date_input("Fecha Solicitud", value=fecha_carga)
+                fecha_solicitud = st.date_input(
+                    "Fecha Solicitud",
+                    value=fecha_carga,
+                    key=f"fecha_solicitud_{carga_id}",
+                )
                 if not datos_carga.get("fecha_solicitud"):
                     st.warning("Fecha no detectada: verifica o completa la fecha.")
                 tipo_inicial = next(iter(tipos_carga), "Detección automática")
@@ -2564,74 +2799,133 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     "Tipo de caso",
                     options=TIPOS_CASO,
                     index=TIPOS_CASO.index(tipo_inicial),
+                    key=f"tipo_caso_{carga_id}",
                 )
             with f_col2:
                 matricula_qx = st.text_input(
                     "Matrícula QX (Placa) *",
                     value=datos_carga.get("placa", ""),
                     placeholder="Se detectará desde el documento o puedes escribirla",
+                    key=f"matricula_qx_{carga_id}",
                 ).strip().upper()
                 if not datos_carga.get("placa"):
                     st.warning("Placa no detectada: escríbela manualmente.")
-                qx_verificado = st.checkbox("QX verificado (propiedad)")
-                num_resolucion = st.text_input("N° Resolución Administrativa").strip()
-                fecha_resolucion = st.date_input("Fecha Resolución", value=None)
+                qx_verificado = st.checkbox(
+                    "QX verificado (propiedad)",
+                    key=f"qx_verificado_{carga_id}",
+                )
+                num_resolucion = st.text_input(
+                    "N° Resolución Administrativa",
+                    value=datos_carga.get("resolucion", ""),
+                    key=f"resolucion_{carga_id}",
+                ).strip()
+                fecha_resolucion = st.date_input(
+                    "Fecha Resolución",
+                    value=None,
+                    key=f"fecha_resolucion_{carga_id}",
+                )
             with f_col3:
-                tipo_notificacion = st.selectbox("Tipo de notificación", ["", "Citación", "Aviso", "Publicación"])
-                fecha_notificacion = st.date_input("Fecha Notificación", value=None)
-                fecha_ejecutoria = st.date_input("Fecha Constancia de Ejecutoria", value=None)
-                remitido = st.checkbox("Remitido a Registro Automotor")
-                fecha_remision = st.date_input("Fecha remisión a registro", value=None)
-                notas = st.text_area("Notas", placeholder="Anotaciones adicionales del expediente")
+                tipo_notificacion = st.selectbox(
+                    "Tipo de notificación",
+                    ["", "Citación", "Aviso", "Publicación"],
+                    key=f"tipo_notificacion_{carga_id}",
+                )
+                fecha_notificacion = st.date_input(
+                    "Fecha Notificación",
+                    value=None,
+                    key=f"fecha_notificacion_{carga_id}",
+                )
+                fecha_ejecutoria = st.date_input(
+                    "Fecha Constancia de Ejecutoria",
+                    value=None,
+                    key=f"fecha_ejecutoria_{carga_id}",
+                )
+                remitido = st.checkbox(
+                    "Remitido a Registro Automotor",
+                    key=f"remitido_{carga_id}",
+                )
+                fecha_remision = st.date_input(
+                    "Fecha remisión a registro",
+                    value=None,
+                    key=f"fecha_remision_{carga_id}",
+                )
+                notas = st.text_area(
+                    "Notas",
+                    placeholder="Anotaciones adicionales del expediente",
+                    value=datos_carga.get("notas", ""),
+                    key=f"notas_{carga_id}",
+                )
 
             st.markdown("#### Información administrativa completa")
             datos_col1, datos_col2, datos_col3 = st.columns(3)
             with datos_col1:
-                empresa_registro = st.text_input("Empresa", value=datos_carga.get("empresa", ""))
-                nit_registro = st.text_input("NIT", value=datos_carga.get("nit", ""))
+                empresa_registro = st.text_input(
+                    "Empresa",
+                    value=datos_carga.get("empresa", ""),
+                    key=f"empresa_{carga_id}",
+                )
+                nit_registro = st.text_input(
+                    "NIT",
+                    value=datos_carga.get("nit", ""),
+                    key=f"nit_{carga_id}",
+                )
                 propietario_registro = st.text_input(
                     "Propietario",
                     value=datos_carga.get("propietario", ""),
+                    key=f"propietario_{carga_id}",
                 )
-                cedula_registro = st.text_input("Cédula", value=datos_carga.get("cedula", ""))
+                cedula_registro = st.text_input(
+                    "Cédula",
+                    value=datos_carga.get("cedula", ""),
+                    key=f"cedula_{carga_id}",
+                )
             with datos_col2:
                 direccion_empresa_registro = st.text_input(
                     "Dirección empresa",
                     value=datos_carga.get("direccion_empresa", ""),
+                    key=f"direccion_empresa_{carga_id}",
                 )
                 direccion_propietario_registro = st.text_input(
                     "Dirección propietario",
                     value=datos_carga.get("direccion_propietario", ""),
+                    key=f"direccion_propietario_{carga_id}",
                 )
                 nueva_empresa_registro = st.text_input(
                     "Nueva empresa",
                     value=datos_carga.get("nueva_empresa", ""),
+                    key=f"nueva_empresa_{carga_id}",
                 )
                 funcionario_registro = st.text_input(
                     "Funcionario que desvincula",
                     value=datos_carga.get("funcionario", datos_usuario.get("alias", "")),
+                    key=f"funcionario_{carga_id}",
                 )
             with datos_col3:
                 fecha_radicacion_registro = st.text_input(
                     "Fecha de radicación",
                     value=datos_carga.get("fecha_radicacion", ""),
                     placeholder="AAAA-MM-DD",
+                    key=f"fecha_radicacion_{carga_id}",
                 )
                 correo_registro = st.text_input(
                     "Correo electrónico",
                     value=datos_carga.get("correo", ""),
+                    key=f"correo_{carga_id}",
                 )
                 recurso_registro = st.text_input(
                     "Recurso",
                     value=datos_carga.get("recurso", ""),
+                    key=f"recurso_{carga_id}",
                 )
                 fecha_recurso_registro = st.date_input(
                     "Fecha recurso",
                     value=None,
+                    key=f"fecha_recurso_{carga_id}",
                 )
                 observacion_registro = st.text_area(
                     "Observación",
                     value=datos_carga.get("observacion", ""),
+                    key=f"observacion_{carga_id}",
                 )
 
             btn_guardar = st.form_submit_button("Guardar y Sincronizar Datos", width="stretch")
@@ -2651,6 +2945,15 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 canvas_list = []
                 documentos_detectados = []
                 archivos_ordenados = archivos_canvas or []
+                carpeta_expediente_drive_id = None
+                if drive_service:
+                    carpeta_expediente_drive_id = carpeta_drive_para_expediente(
+                        drive_service,
+                        str(fecha_solicitud),
+                        radicado_padre,
+                        matricula_qx,
+                        f"Expediente-completo_{cod_ub}",
+                    )
                 if archivos_canvas and orden_archivos:
                     indices = [
                         int(opcion.split(" - ", 1)[0]) - 1
@@ -2659,7 +2962,6 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     archivos_ordenados = [archivos_canvas[indice] for indice in indices]
                 if archivos_ordenados:
                     archivos_preparados = []
-                    carpeta_expediente_drive_id = None
                     for archivo in archivos_ordenados:
                         contenido_original = archivo.getvalue()
                         if archivo.name.lower().endswith(".pdf"):
@@ -2667,6 +2969,11 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                 contenido_original,
                                 tipo_documento,
                             )
+                            if not partes:
+                                st.warning(
+                                    f"El archivo '{archivo.name}' no contiene páginas útiles "
+                                    "después de limpiar las páginas blancas."
+                                )
                         else:
                             contenido_imagen = convertir_imagen_a_pdf(
                                 contenido_original,
@@ -2698,22 +3005,25 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             "nombre_original",
                             nombre_original,
                         )
-                        texto_pdf = ""
-                        if nombre_original.lower().endswith(".pdf") and PdfReader is not None:
-                            try:
-                                lector = PdfReader(io.BytesIO(contenido_archivo))
-                                texto_pdf = " ".join(
-                                    pagina.extract_text() or "" for pagina in lector.pages
-                                )
-                            except Exception:
-                                texto_pdf = ""
-                        datos_pdf = extraer_datos_pdf(contenido_archivo) if texto_pdf else {}
+                        texto_pdf = (
+                            extraer_texto_pdf(contenido_archivo)
+                            if nombre_original.lower().endswith(".pdf")
+                            else ""
+                        )
+                        datos_pdf = extraer_datos_pdf(
+                            contenido_archivo,
+                            texto=texto_pdf,
+                        )
                         tipo_detectado = clasificar_tipo_caso(texto_pdf, nombre_original)
+                        tipo_documento_final = clasificar_tipo_documento(
+                            texto_pdf,
+                            archivo_preparado["tipo"],
+                        )
                         nombre_drive = nombre_documento_expediente(
                             datos_pdf.get("radicado_padre") or radicado_padre,
                             datos_pdf.get("placa") or matricula_qx,
                             str(fecha_solicitud),
-                            f"{tipo_documento}_{cod_ub}",
+                            f"{tipo_documento_final}_{cod_ub}",
                             os.path.splitext(nombre_original)[1] or ".pdf",
                         )
                         if datos_pdf:
@@ -2740,12 +3050,8 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         if duplicado_local:
                             st.info(f"Se omitió el duplicado: {nombre_original}")
                             continue
-                        carpeta_documento_id = carpeta_drive_para_fecha(
-                            drive_service,
-                            str(fecha_solicitud),
-                        ) if drive_service else None
+                        carpeta_documento_id = carpeta_expediente_drive_id
                         if drive_service and carpeta_documento_id:
-                            carpeta_expediente_drive_id = carpeta_documento_id
                             duplicado_drive = buscar_archivo_drive(
                                 drive_service,
                                 carpeta_documento_id,
@@ -2770,7 +3076,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             "drive_id": file_id,
                             "drive_url": drive_url,
                             "metadatos_pdf": datos_pdf,
-                            "tipo_documento": archivo_preparado["tipo"],
+                            "tipo_documento": tipo_documento_final,
                             "tipo_caso_detectado": tipo_detectado,
                             "huella": huella,
                         })
@@ -2779,7 +3085,34 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         archivo["contenido"] for archivo in archivos_preparados
                         if archivo["nombre"].lower().endswith(".pdf")
                     ]
-                    if len(pdfs_cargados) > 1:
+                    if existente and drive_service:
+                        huellas_unificado = {
+                            huella_contenido(contenido)
+                            for contenido in pdfs_cargados
+                        }
+                        for documento_existente in existente.get("canvas_paginas", []):
+                            if (
+                                documento_existente.get("tipo_documento")
+                                == "Expediente completo"
+                                or not documento_existente.get("drive_id")
+                            ):
+                                continue
+                            try:
+                                contenido_existente = descargar_archivo_drive(
+                                    drive_service,
+                                    documento_existente["drive_id"],
+                                )
+                            except Exception as error:
+                                st.warning(
+                                    "No se pudo recuperar un documento anterior para "
+                                    f"reconstruir el PDF completo: {error}"
+                                )
+                                continue
+                            huella_existente = huella_contenido(contenido_existente)
+                            if huella_existente not in huellas_unificado:
+                                pdfs_cargados.insert(0, contenido_existente)
+                                huellas_unificado.add(huella_existente)
+                    if pdfs_cargados:
                         pdf_unificado = unir_archivos_pdf(pdfs_cargados)
                         if pdf_unificado:
                             nombre_unificado = nombre_documento_expediente(

@@ -18,3 +18,5 @@ update_installer.bat
 installer/*.exe
 desktop.ini
 *.lnk
+# Guía local con datos de acceso completados por el propietario
+GUIA_OPERATIVA_ACCESOS_SISTEMA.docx

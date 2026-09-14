@@ -69,8 +69,10 @@ hiddenimports = [
     'PIL',
     'PIL.Image',
     'PIL.PngImagePlugin',
+    'fitz',
+    'rapidocr_onnxruntime',
     'clr',
-] + collect_submodules('streamlit') + collect_submodules('streamlit_pdf') + collect_submodules('webview') + collect_submodules('openpyxl') + collect_submodules('googleapiclient') + collect_submodules('google_auth_oauthlib') + collect_submodules('PySide6')
+] + collect_submodules('streamlit') + collect_submodules('streamlit_pdf') + collect_submodules('webview') + collect_submodules('openpyxl') + collect_submodules('googleapiclient') + collect_submodules('google_auth_oauthlib') + collect_submodules('PySide6') + collect_submodules('rapidocr_onnxruntime')
 
 # Resolver la ruta del icono para el ejecutable (.exe)
 icono_path = 'Icono.ico' if os.path.exists('Icono.ico') else os.path.join('images', 'logo.ico')
