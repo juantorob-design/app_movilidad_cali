@@ -69,6 +69,11 @@ try:
 except ImportError:
     RapidOCR = None
 
+try:
+    import onnxruntime as ort
+except ImportError:
+    ort = None
+
 _ocr_engine = None
 _ocr_cache_writes_pending = 0
 # Los expedientes recibidos son escaneos y pueden superar ampliamente ocho
@@ -79,6 +84,43 @@ OCR_MAX_PAGES = None
 OCR_RENDER_SCALE = 1.2
 OCR_CACHE_VERSION = "2"
 _ocr_persistent_cache = None
+
+
+def proveedores_ocr_disponibles():
+    """Devuelve los proveedores ONNX disponibles, sin exigir permisos de administrador."""
+    if ort is None:
+        return []
+    try:
+        return list(ort.get_available_providers())
+    except (AttributeError, RuntimeError):
+        return []
+
+
+def configuracion_ocr_local():
+    """Selecciona aceleración GPU compatible y conserva CPU como respaldo."""
+    proveedores = proveedores_ocr_disponibles()
+    if "CUDAExecutionProvider" in proveedores:
+        return {"use_cuda": True, "use_dml": False}
+    if "DmlExecutionProvider" in proveedores:
+        return {"use_cuda": False, "use_dml": True}
+    return {"use_cuda": False, "use_dml": False}
+
+
+def estado_ocr_local():
+    proveedores = proveedores_ocr_disponibles()
+    if "CUDAExecutionProvider" in proveedores:
+        return "GPU NVIDIA (CUDA)"
+    if "DmlExecutionProvider" in proveedores:
+        return "GPU Windows (DirectML)"
+    if "CPUExecutionProvider" in proveedores:
+        return "CPU local"
+    return "No disponible"
+
+
+def crear_motor_ocr():
+    if RapidOCR is None:
+        return None
+    return RapidOCR(**configuracion_ocr_local())
 
 try:
     from updater import obtener_actualizacion_disponible, download_and_apply_update
@@ -1125,7 +1167,7 @@ def obtener_texto_ocr_pagina(contenido, pagina, objeto_pagina, escala=OCR_RENDER
         return texto_guardado
     global _ocr_engine
     if _ocr_engine is None:
-        _ocr_engine = RapidOCR()
+        _ocr_engine = crear_motor_ocr()
     pixmap = objeto_pagina.get_pixmap(
         matrix=fitz.Matrix(escala, escala),
         alpha=False,
@@ -1230,7 +1272,7 @@ def _extraer_texto_pdf(contenido, progreso=None):
     try:
         global _ocr_engine
         if _ocr_engine is None:
-            _ocr_engine = RapidOCR()
+            _ocr_engine = crear_motor_ocr()
         documento = fitz.open(stream=contenido, filetype="pdf")
         paginas = [texto] if texto else []
         total_paginas = len(documento)
@@ -1571,7 +1613,7 @@ def extraer_texto_ocr_pixmap(pixmap):
     try:
         global _ocr_engine
         if _ocr_engine is None:
-            _ocr_engine = RapidOCR()
+            _ocr_engine = crear_motor_ocr()
         resultado, _ = _ocr_engine(pixmap.tobytes("png"))
         return normalizar_texto_documento(
             " ".join(str(elemento[1]) for elemento in (resultado or []))
@@ -2962,6 +3004,7 @@ with st.sidebar:
         )
     st.markdown("### Sistema de desvinculaciones")
     st.caption(datos_usuario["alias"])
+    st.caption(f"Lectura local: {estado_ocr_local()}")
     st.divider()
     for opc in opciones_menu:
         if opc in {"Google Drive", "Hoja Google Sheets"}:

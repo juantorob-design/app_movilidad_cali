@@ -1,5 +1,5 @@
 {
-  "version": "1.1.8",
-  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.8/SistemaDesvinculaciones-Setup-1.1.8.exe",
-  "changelog": "IA local OCR con caché persistente, lectura acelerada y memoria local inicializada automáticamente."
+  "version": "1.1.9",
+  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.9/SistemaDesvinculaciones-Setup-1.1.9.exe",
+  "changelog": "IA local OCR con ONNX Runtime DirectML incluido, selección automática de GPU y respaldo CPU."
 }

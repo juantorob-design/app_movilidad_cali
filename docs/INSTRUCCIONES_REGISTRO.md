@@ -70,6 +70,12 @@ existir un PDF completo en la raíz del expediente. Al agregar complementos:
 7. El OCR se conserva en una caché local por huella del archivo, página y
    resolución. Esto permite que la separación documental reutilice la lectura
    inicial sin volver a procesar las mismas páginas.
+8. El instalador incluye ONNX Runtime DirectML y sus bibliotecas, por lo que no
+   se necesita instalar Python ni descargar componentes manualmente en cada
+   equipo. Al iniciar, ONNX Runtime detecta automáticamente CUDA para GPU
+   NVIDIA, DirectML para GPU compatible con Windows o CPU local como respaldo.
+   El uso normal de la GPU no requiere permisos administrativos; sí requiere
+   que Windows tenga un controlador gráfico funcional.
 
 Los archivos sin fecha se guardan en `Pendientes` hasta que el expediente tenga
 fecha de solicitud; después se trasladan al año y subcarpeta documental

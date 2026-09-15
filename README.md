@@ -63,6 +63,12 @@ Las actualizaciones publicadas se consultan mediante `version.json`. Cuando hay
 una versión nueva, la aplicación muestra botones para autorizar **Actualizar
 ahora** o seleccionar **Más tarde**; el instalador no se descarga sin autorización.
 
+El instalador incluye ONNX Runtime DirectML para acelerar el OCR con la GPU
+disponible en Windows. La aplicación detecta automáticamente CUDA, DirectML o
+CPU; no instala Python ni solicita permisos administrativos para acceder a la
+GPU. Si el equipo no tiene una GPU compatible o el controlador no está
+disponible, el OCR continúa funcionando mediante CPU local.
+
 ## Datos y credenciales
 
 Las credenciales OAuth, tokens, la base local y los entornos de Python están excluidos

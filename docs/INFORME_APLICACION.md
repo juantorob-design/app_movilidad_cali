@@ -209,9 +209,9 @@ instalador de Inno Setup para Windows de 64 bits. El actualizador consulta
 `version.json` en GitHub Raw y, si encuentra una versión superior, descarga el
 instalador correspondiente.
 
-La versión preparada para publicación es la 1.1.8:
+La versión preparada para publicación es la 1.1.9:
 
-<https://github.com/juantorob-design/app_movilidad_cali/releases/tag/v1.1.8>
+<https://github.com/juantorob-design/app_movilidad_cali/releases/tag/v1.1.9>
 
 Cuando existe una versión superior, la aplicación muestra un aviso con los
 botones **Actualizar ahora** y **Más tarde**. La descarga solo inicia después

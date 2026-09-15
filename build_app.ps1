@@ -77,6 +77,9 @@ try {
         Write-Host "Instalando/actualizando paquetes desde 'requirements.txt'..." -ForegroundColor Yellow
         & $pythonVenv -m pip install --upgrade pip
         & $pythonVenv -m pip install -r "$PSScriptRoot\requirements.txt"
+        Write-Host "Preparando ONNX Runtime DirectML para GPU Windows..." -ForegroundColor Yellow
+        & $pythonVenv -m pip uninstall -y onnxruntime
+        & $pythonVenv -m pip install --upgrade onnxruntime-directml
         & $pythonVenv -m pip install pyinstaller
         if ($LASTEXITCODE -ne 0) {
             Write-Host "ERROR: Ocurrió un fallo al instalar las librerías." -ForegroundColor Red
