@@ -69,6 +69,9 @@ _ocr_engine = None
 # Los expedientes recibidos son escaneos y pueden superar ampliamente ocho
 # páginas. Limitar el OCR dejaba sin leer la mayor parte del expediente.
 OCR_MAX_PAGES = None
+# 1.2x conserva una resolución suficiente para formularios escaneados y
+# reduce el costo del OCR frente al renderizado anterior de 1.5x.
+OCR_RENDER_SCALE = 1.2
 
 try:
     from updater import obtener_actualizacion_disponible, download_and_apply_update
@@ -1112,7 +1115,10 @@ def _extraer_texto_pdf(contenido, progreso=None):
         for indice, pagina in enumerate(documento):
             if OCR_MAX_PAGES is not None and indice >= OCR_MAX_PAGES:
                 break
-            pixmap = pagina.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+            pixmap = pagina.get_pixmap(
+                matrix=fitz.Matrix(OCR_RENDER_SCALE, OCR_RENDER_SCALE),
+                alpha=False,
+            )
             resultado, _ = _ocr_engine(pixmap.tobytes("png"))
             if resultado:
                 paginas.append(" ".join(str(elemento[1]) for elemento in resultado))
@@ -2852,6 +2858,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
         datos_carga = {}
         datos_sheet = {}
         tipos_carga = set()
+        textos_analizados = {}
         fecha_carga = None
         if archivos_canvas:
             opciones_orden = [
@@ -2900,6 +2907,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         ),
                     )
                 )
+                textos_analizados[huella_contenido(contenido_analizable)] = texto_archivo
                 combinar_datos_detectados(
                     datos_carga,
                     extraer_datos_pdf(
@@ -3373,6 +3381,11 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                 "tipo": tipo_documento,
                                 "paginas": 1,
                             }]
+                        texto_analizado = (
+                            textos_analizados.get(huella_contenido(contenido_original))
+                            if len(partes) == 1
+                            else None
+                        )
                         for numero, parte in enumerate(partes, start=1):
                             archivos_preparados.append({
                                 "nombre": (
@@ -3385,6 +3398,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                     else f"{os.path.splitext(archivo.name)[0]}_{numero}.pdf"
                                 ),
                                 "nombre_original": archivo.name,
+                                "texto_analizado": texto_analizado,
                                 **parte,
                             })
                         barra_guardado.progress(
@@ -3417,11 +3431,10 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             "nombre_original",
                             nombre_original,
                         )
-                        texto_pdf = (
-                            extraer_texto_pdf(contenido_archivo)
-                            if nombre_original.lower().endswith(".pdf")
-                            else ""
-                        )
+                        texto_pdf = archivo_preparado.get("texto_analizado")
+                        if texto_pdf is None and nombre_original.lower().endswith(".pdf"):
+                            texto_pdf = extraer_texto_pdf(contenido_archivo)
+                        texto_pdf = texto_pdf or ""
                         datos_pdf = extraer_datos_pdf(
                             contenido_archivo,
                             texto=texto_pdf,

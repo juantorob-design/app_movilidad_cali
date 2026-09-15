@@ -1,5 +1,5 @@
 #define MyAppName "Sistema de Desvinculaciones"
-#define MyAppVersion "1.1.2"
+#define MyAppVersion "1.1.3"
 #define MyAppPublisher "Sistema de Desvinculaciones"
 #define MyAppExeName "SistemaDesvinculaciones.exe"
 
