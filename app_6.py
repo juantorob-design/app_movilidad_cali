@@ -32,6 +32,10 @@ from urllib.parse import quote, urlencode, urlparse, parse_qs
 
 import streamlit as st
 import streamlit.components.v1 as components
+try:
+    from streamlit_pdf import pdf_viewer
+except ImportError:
+    pdf_viewer = None
 import pandas as pd
 import requests
 from dotenv import load_dotenv
@@ -1145,6 +1149,13 @@ def normalizar_texto_documento(texto):
     return " ".join(str(texto or "").replace("\xa0", " ").split())
 
 
+def fecha_para_formulario(valor):
+    try:
+        return datetime.date.fromisoformat(str(valor).strip()) if valor else None
+    except (TypeError, ValueError):
+        return None
+
+
 def combinar_datos_detectados(destino, nuevos):
     """Conserva el primer valor útil y evita que un anexo borre otro dato."""
     for campo, valor in (nuevos or {}).items():
@@ -1173,6 +1184,18 @@ def extraer_datos_pdf(contenido, texto=None):
             r"\b(\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\s+de\s+20\d{2})\b",
             r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b",
         ],
+        "fecha_radicacion": [
+            r"(?:fecha\s+de\s+)?radicaci[oó]n\s*[:#\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+        ],
+        "fecha_recurso": [
+            r"fecha\s+(?:de\s+)?recurso\s*[:#\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+        ],
+        "fecha_notificacion": [
+            r"fecha\s+(?:de\s+)?notificaci[oó]n\s*[:#\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+        ],
+        "fecha_ejecutoria": [
+            r"fecha\s+(?:de\s+)?(?:constancia\s+de\s+)?ejecutoria\s*[:#\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+        ],
         "correo": [
             r"\b([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})\b",
         ],
@@ -1191,6 +1214,15 @@ def extraer_datos_pdf(contenido, texto=None):
         ],
         "direccion_empresa": [
             r"\bdirecci[oó]n\s+(?:de\s+)?empresa\s*[:#\-]\s*([^|]{5,150}?)(?=\s+(?:propietario|NIT|radicado)\b|$)",
+        ],
+        "direccion_propietario": [
+            r"\bdirecci[oó]n\s+(?:del\s+)?propietario\s*[:#\-]\s*([^|]{5,150}?)(?=\s+(?:propietario|c[eé]dula|placa|radicado)\b|$)",
+        ],
+        "nueva_empresa": [
+            r"\bnueva\s+empresa\s*[:#\-]\s*([^|]{3,120}?)(?=\s+(?:NIT|radicado|placa|fecha)\b|$)",
+        ],
+        "tipo_notificacion": [
+            r"\bnotificaci[oó]n\s+(?:por\s+)?(citación|citaci[oó]n|aviso|publicaci[oó]n)\b",
         ],
         "funcionario": [
             r"\bfuncionario\s+(?:que\s+)?desvincula\s*[:#\-]\s*([^|]{3,100}?)(?=\s+(?:fecha|observaci[oó]n|estado)\b|$)",
@@ -1217,7 +1249,7 @@ def extraer_datos_pdf(contenido, texto=None):
                     valor = re.sub(r"\s+", "", valor).upper()
                 if campo == "placa":
                     valor = re.sub(r"[\s-]", "", valor).upper()
-                elif campo == "fecha_solicitud":
+                elif campo.startswith("fecha_"):
                     fecha_texto = valor.lower()
                     fecha_larga = re.fullmatch(
                         r"(\d{1,2})\s+de\s+([a-záéíóú]+)\s+de\s+(20\d{2})",
@@ -1408,6 +1440,23 @@ def clasificar_tipo_documento(texto, tipo_fallback):
     return tipo_fallback
 
 
+def tipos_documentales_detectados(texto, tipo_fallback):
+    """Devuelve todos los tipos mencionados en un expediente unificado."""
+    evidencia = normalizar_texto_documento(texto).lower()
+    reglas = [
+        ("Desistimiento", r"desistim|desiste"),
+        ("Recurso", r"\brecurso\b|reposici[oó]n|apelaci[oó]n"),
+        ("Resolución", r"\bresoluci[oó]n\b|acto\s+administrativo"),
+        ("Notificación", r"notificaci[oó]n|citado|aviso|publicaci[oó]n"),
+        ("Constancia de ejecutoria", r"ejecutoria|firmeza"),
+        ("Solicitud", r"derecho de petici[oó]n|solicito|solicitud"),
+    ]
+    detectados = {
+        tipo for tipo, patron in reglas if re.search(patron, evidencia)
+    }
+    return detectados or {tipo_fallback}
+
+
 def nombre_documento_expediente(radicado, placa, fecha, ubicacion, extension):
     """Genera un nombre estable para ubicar documentos aunque lleguen con otro nombre."""
     partes = [radicado, placa, fecha, ubicacion]
@@ -1479,13 +1528,20 @@ def mostrar_documento_en_aplicacion(contenido, nombre, solo_lectura=False):
     """Muestra un documento sin abrir Drive ni exponer controles de descarga al visualizador."""
     extension = os.path.splitext(nombre)[1].lower()
     if extension == ".pdf":
+        if pdf_viewer is not None:
+            pdf_viewer(
+                contenido,
+                height=700,
+                key=f"pdf-preview-{huella_contenido(contenido)[:16]}",
+            )
+            return
         pdf_data = base64.b64encode(contenido).decode("ascii")
-        controles = "" if solo_lectura else "#toolbar=1&navpanes=1"
+        controles = "" if solo_lectura else "toolbar=1&navpanes=1"
         bloqueo = " oncontextmenu=\"return false;\"" if solo_lectura else ""
         components.html(
             f"""
             <iframe
-                src="data:application/pdf;base64,{pdf_data}{controles}"
+                src="data:application/pdf;base64,{pdf_data}{'#' + controles if controles else ''}"
                 style="width:100%;height:700px;border:0"
                 {bloqueo}
             ></iframe>
@@ -2858,6 +2914,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
         datos_carga = {}
         datos_sheet = {}
         tipos_carga = set()
+        tipos_documentales_carga = set()
         textos_analizados = {}
         fecha_carga = None
         if archivos_canvas:
@@ -2927,6 +2984,9 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 )
                 if tipo_detectado:
                     tipos_carga.add(tipo_detectado)
+                tipos_documentales_carga.update(
+                    tipos_documentales_detectados(texto_archivo, tipo_documento)
+                )
             barra_analisis.progress(
                 1.0,
                 text="Análisis terminado. Información lista para confirmar.",
@@ -2954,7 +3014,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
             if tipo_checklist in DOCUMENTOS_BASE_POR_CASO:
                 renderizar_checklist_documental(
                     tipo_checklist,
-                    [tipo_documento] if archivos_canvas else [],
+                    sorted(tipos_documentales_carga),
                 )
             campos_detectados = sorted(
                 campo.replace("_", " ").capitalize()
@@ -3165,23 +3225,30 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 ).strip()
                 fecha_resolucion = st.date_input(
                     "Fecha Resolución",
-                    value=None,
+                    value=fecha_para_formulario(datos_carga.get("fecha_resolucion")),
                     key=f"fecha_resolucion_{carga_id}",
                 )
             with f_col3:
+                tipos_notificacion = ["", "Citación", "Aviso", "Publicación"]
+                notificacion_actual = datos_carga.get("tipo_notificacion", "")
                 tipo_notificacion = st.selectbox(
                     "Tipo de notificación",
-                    ["", "Citación", "Aviso", "Publicación"],
+                    tipos_notificacion,
+                    index=(
+                        tipos_notificacion.index(notificacion_actual)
+                        if notificacion_actual in tipos_notificacion
+                        else 0
+                    ),
                     key=f"tipo_notificacion_{carga_id}",
                 )
                 fecha_notificacion = st.date_input(
                     "Fecha Notificación",
-                    value=None,
+                    value=fecha_para_formulario(datos_carga.get("fecha_notificacion")),
                     key=f"fecha_notificacion_{carga_id}",
                 )
                 fecha_ejecutoria = st.date_input(
                     "Fecha Constancia de Ejecutoria",
-                    value=None,
+                    value=fecha_para_formulario(datos_carga.get("fecha_ejecutoria")),
                     key=f"fecha_ejecutoria_{carga_id}",
                 )
                 remitido = st.checkbox(
@@ -3263,7 +3330,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 )
                 fecha_recurso_registro = st.date_input(
                     "Fecha recurso",
-                    value=None,
+                    value=fecha_para_formulario(datos_carga.get("fecha_recurso")),
                     key=f"fecha_recurso_{carga_id}",
                 )
                 observacion_registro = st.text_area(
