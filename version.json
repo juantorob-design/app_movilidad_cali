@@ -1,5 +1,5 @@
 {
-  "version": "1.1.0",
-  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.0/SistemaDesvinculaciones-Setup-1.1.0.exe",
-  "changelog": "Checklist documental por proceso, resumen y visor integrado de cargas, bandeja de PDF pendientes, asociación por radicado o placa y actualización autorizada desde la aplicación."
+  "version": "1.1.1",
+  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.1/SistemaDesvinculaciones-Setup-1.1.1.exe",
+  "changelog": "Corrección de interpretación de fechas históricas en formatos día/mes/año y fechas seriales de Excel."
 }
