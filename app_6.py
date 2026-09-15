@@ -66,7 +66,9 @@ except ImportError:
     RapidOCR = None
 
 _ocr_engine = None
-OCR_MAX_PAGES = 8
+# Los expedientes recibidos son escaneos y pueden superar ampliamente ocho
+# páginas. Limitar el OCR dejaba sin leer la mayor parte del expediente.
+OCR_MAX_PAGES = None
 
 try:
     from updater import obtener_actualizacion_disponible, download_and_apply_update
@@ -1072,8 +1074,7 @@ def descargar_archivo_drive(service, file_id):
     return buffer.getvalue()
 
 
-@lru_cache(maxsize=8)
-def extraer_texto_pdf(contenido):
+def _extraer_texto_pdf(contenido, progreso=None):
     """Devuelve texto digital y usa OCR local como respaldo para PDFs escaneados."""
     if PdfReader is None:
         return ""
@@ -1094,6 +1095,8 @@ def extraer_texto_pdf(contenido):
         if texto and texto_util:
             datos_basicos = extraer_datos_pdf(contenido, texto=texto)
             if len(datos_basicos) >= 2:
+                if progreso:
+                    progreso(1, 1)
                 return texto
     except Exception:
         texto = ""
@@ -1105,17 +1108,31 @@ def extraer_texto_pdf(contenido):
             _ocr_engine = RapidOCR()
         documento = fitz.open(stream=contenido, filetype="pdf")
         paginas = []
+        total_paginas = len(documento)
         for indice, pagina in enumerate(documento):
-            if indice >= OCR_MAX_PAGES:
+            if OCR_MAX_PAGES is not None and indice >= OCR_MAX_PAGES:
                 break
             pixmap = pagina.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
             resultado, _ = _ocr_engine(pixmap.tobytes("png"))
             if resultado:
                 paginas.append(" ".join(str(elemento[1]) for elemento in resultado))
+            if progreso:
+                progreso(indice + 1, total_paginas)
         documento.close()
         return normalizar_texto_documento(" ".join(paginas))
     except Exception:
         return texto
+
+
+@lru_cache(maxsize=8)
+def extraer_texto_pdf(contenido):
+    """Devuelve texto cacheado para lecturas repetidas del mismo documento."""
+    return _extraer_texto_pdf(contenido)
+
+
+def extraer_texto_pdf_con_progreso(contenido, progreso):
+    """Extrae texto y notifica el avance de OCR sin contaminar la caché."""
+    return _extraer_texto_pdf(contenido, progreso=progreso)
 
 
 def normalizar_texto_documento(texto):
@@ -1148,6 +1165,7 @@ def extraer_datos_pdf(contenido, texto=None):
         "fecha_solicitud": [
             r"(?:fecha\s*(?:de\s*)?(?:creaci[oó]n|radicaci[oó]n|solicitud|recibido))\s*[:#\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
             r"\b(\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\s+de\s+20\d{2})\b",
+            r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b",
         ],
         "correo": [
             r"\b([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})\b",
@@ -1163,12 +1181,16 @@ def extraer_datos_pdf(contenido, texto=None):
         ],
         "propietario": [
             r"\bpropietario(?:\s+del\s+veh[ií]culo)?\s*[:#\-]\s*([^|]{3,100}?)(?=\s+(?:c[eé]dula|CC|placa|direcci[oó]n|resoluci[oó]n|correo|NIT)\b|$)",
+            r"\b(?:representante\s+legal|gerente)\s*[:#\-]?\s*([A-ZÁÉÍÓÚÑ][^|]{3,100}?)(?=\s+(?:identificado|con\s+c[eé]dula|NIT|solicito)\b)",
         ],
         "direccion_empresa": [
             r"\bdirecci[oó]n\s+(?:de\s+)?empresa\s*[:#\-]\s*([^|]{5,150}?)(?=\s+(?:propietario|NIT|radicado)\b|$)",
         ],
         "funcionario": [
             r"\bfuncionario\s+(?:que\s+)?desvincula\s*[:#\-]\s*([^|]{3,100}?)(?=\s+(?:fecha|observaci[oó]n|estado)\b|$)",
+        ],
+        "recurso": [
+            r"\b(recurso(?:\s+de\s+(?:reposici[oó]n|apelaci[oó]n))?)\b",
         ],
         "resolucion": [
             r"\b(?:resoluci[oó]n|acto\s+administrativo)\s*(?:No\.?|N[°ºo]\.?)?\s*[:#\-]?\s*([A-Z0-9./\-]{4,40})\b",
@@ -1393,11 +1415,19 @@ def nombre_documento_expediente(radicado, placa, fecha, ubicacion, extension):
 def clasificar_tipo_caso(texto="", nombre=""):
     """Identifica uno de los tres desenlaces válidos del expediente."""
     evidencia = f"{nombre} {texto}".lower()
-    if re.search(r"desistim|desistimiento|desiste", evidencia):
+    if re.search(r"desistim|desestimiento|desistimiento|desiste", evidencia):
         return "Desistimiento"
-    if re.search(r"\bcon\s+recurso\b|\brecurso\s+de\s+reposici[oó]n\b", evidencia):
+    if re.search(
+        r"\bcon\s+recurso\b|\brecurso\s+de\s+reposici[oó]n\b|"
+        r"\binterpuso\s+recurso\b",
+        evidencia,
+    ):
         return "Con recurso"
-    if re.search(r"\bsin\s+recurso\b|no\s+interpuso\s+recurso|sin\s+interponer", evidencia):
+    if re.search(
+        r"\bsin\s+recurso\b|no\s+interpuso\s+recurso|sin\s+interponer|"
+        r"\bno\s+present[oó]\s+recurso\b",
+        evidencia,
+    ):
         return "Sin recurso"
     return None
 
@@ -1443,25 +1473,44 @@ def mostrar_documento_en_aplicacion(contenido, nombre, solo_lectura=False):
     """Muestra un documento sin abrir Drive ni exponer controles de descarga al visualizador."""
     extension = os.path.splitext(nombre)[1].lower()
     if extension == ".pdf":
-        if solo_lectura:
-            pdf_data = base64.b64encode(contenido).decode("ascii")
-            components.html(
-                f"""
-                <iframe
-                    src="data:application/pdf;base64,{pdf_data}#toolbar=0&navpanes=0"
-                    style="width:100%;height:700px;border:0"
-                    oncontextmenu="return false;"
-                ></iframe>
-                """,
-                height=700,
-                scrolling=False,
-            )
-        else:
-            st.pdf(contenido)
+        pdf_data = base64.b64encode(contenido).decode("ascii")
+        controles = "" if solo_lectura else "#toolbar=1&navpanes=1"
+        bloqueo = " oncontextmenu=\"return false;\"" if solo_lectura else ""
+        components.html(
+            f"""
+            <iframe
+                src="data:application/pdf;base64,{pdf_data}{controles}"
+                style="width:100%;height:700px;border:0"
+                {bloqueo}
+            ></iframe>
+            """,
+            height=700,
+            scrolling=False,
+        )
     elif extension in {".png", ".jpg", ".jpeg"}:
         st.image(contenido, caption=nombre, width="stretch")
     else:
         st.info("Este tipo de archivo no tiene vista previa integrada.")
+
+
+def guardar_documento_local(contenido, nombre):
+    """Conserva una copia local para visualizar el expediente sin conexión a Drive."""
+    carpeta = resolver_dato("documentos")
+    os.makedirs(carpeta, exist_ok=True)
+    extension = os.path.splitext(nombre)[1].lower() or ".pdf"
+    ruta = os.path.join(carpeta, f"{huella_contenido(contenido)}{extension}")
+    if not os.path.exists(ruta):
+        with open(ruta, "wb") as archivo:
+            archivo.write(contenido)
+    return ruta
+
+
+def leer_documento_local(documento):
+    ruta = documento.get("ruta_local", "")
+    if ruta and os.path.exists(ruta):
+        with open(ruta, "rb") as archivo:
+            return archivo.read()
+    return None
 
 def obtener_rango_primera_hoja(service, columnas="A:Z"):
     metadata = service.spreadsheets().get(
@@ -2800,7 +2849,17 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 options=opciones_orden,
                 default=opciones_orden,
             )
-            for archivo in archivos_canvas:
+            barra_analisis = st.progress(
+                0,
+                text=f"Preparando análisis de {len(archivos_canvas)} archivo(s)...",
+            )
+            estado_analisis = st.empty()
+            total_archivos = len(archivos_canvas)
+            for indice_archivo, archivo in enumerate(archivos_canvas, start=1):
+                estado_analisis.info(
+                    f"Analizando archivo {indice_archivo} de {total_archivos}: "
+                    f"**{archivo.name}**. El OCR puede tardar según el número de páginas."
+                )
                 contenido = archivo.getvalue()
                 contenido_analizable = contenido
                 if not archivo.name.lower().endswith(".pdf"):
@@ -2812,7 +2871,20 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     except ValueError:
                         contenido_analizable = b""
                 texto_archivo = normalizar_texto_documento(
-                    extraer_texto_pdf(contenido_analizable)
+                    extraer_texto_pdf_con_progreso(
+                        contenido_analizable,
+                        lambda pagina, total, indice=indice_archivo: barra_analisis.progress(
+                            min(
+                                (indice - 1 + (pagina / max(total, 1)))
+                                / total_archivos,
+                                1.0,
+                            ),
+                            text=(
+                                f"Analizando archivo {indice} de {total_archivos}: "
+                                f"página {pagina} de {total}"
+                            ),
+                        ),
+                    )
                 )
                 combinar_datos_detectados(
                     datos_carga,
@@ -2833,6 +2905,14 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 )
                 if tipo_detectado:
                     tipos_carga.add(tipo_detectado)
+            barra_analisis.progress(
+                1.0,
+                text="Análisis terminado. Información lista para confirmar.",
+            )
+            estado_analisis.success(
+                "Lectura de los archivos terminada. Revisa los datos detectados "
+                "antes de guardar."
+            )
             if datos_carga:
                 st.success(
                     "Datos detectados: "
@@ -2998,9 +3078,12 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 "Detección automática",
             ),
         }
-        for clave, valor in campos_formulario.items():
-            if valor not in (None, "") and clave not in st.session_state:
-                st.session_state[clave] = valor
+        carga_anterior = st.session_state.get("_registro_carga_id")
+        if carga_anterior != carga_id:
+            for clave, valor in campos_formulario.items():
+                if valor not in (None, ""):
+                    st.session_state[clave] = valor
+            st.session_state["_registro_carga_id"] = carga_id
 
         st.subheader("2. Confirmar y completar el expediente")
         with st.form("form_registro_canvas"):
@@ -3241,7 +3324,20 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     archivos_ordenados = [archivos_canvas[indice] for indice in indices]
                 if archivos_ordenados:
                     archivos_preparados = []
-                    for archivo in archivos_ordenados:
+                    barra_guardado = st.progress(
+                        0,
+                        text="Preparando documentos para guardar...",
+                    )
+                    estado_guardado = st.empty()
+                    total_guardado = len(archivos_ordenados)
+                    for indice_guardado, archivo in enumerate(
+                        archivos_ordenados,
+                        start=1,
+                    ):
+                        estado_guardado.info(
+                            f"Preparando documento {indice_guardado} de "
+                            f"{total_guardado}: **{archivo.name}**"
+                        )
                         contenido_original = archivo.getvalue()
                         if archivo.name.lower().endswith(".pdf"):
                             partes = separar_pdf_completo(
@@ -3277,7 +3373,30 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                 "nombre_original": archivo.name,
                                 **parte,
                             })
+                        barra_guardado.progress(
+                            indice_guardado / max(total_guardado, 1),
+                            text=(
+                                f"Documentos preparados: {indice_guardado} "
+                                f"de {total_guardado}"
+                            ),
+                        )
                     for idx, archivo_preparado in enumerate(archivos_preparados):
+                        estado_guardado.info(
+                            f"Guardando documento {idx + 1} de "
+                            f"{len(archivos_preparados)}: "
+                            f"**{archivo_preparado['nombre_original']}**"
+                        )
+                        barra_guardado.progress(
+                            min(
+                                (total_guardado + idx + 1)
+                                / max(total_guardado + len(archivos_preparados), 1),
+                                1.0,
+                            ),
+                            text=(
+                                f"Guardando documento {idx + 1} de "
+                                f"{len(archivos_preparados)}"
+                            ),
+                        )
                         contenido_archivo = archivo_preparado["contenido"]
                         nombre_original = archivo_preparado["nombre"]
                         nombre_fuente = archivo_preparado.get(
@@ -3311,6 +3430,10 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                     f"{campo}={valor}" for campo, valor in datos_pdf.items()
                                 )
                             )
+                        ruta_local = guardar_documento_local(
+                            contenido_archivo,
+                            nombre_drive,
+                        )
                         file_id, drive_url = None, None
                         huella = huella_contenido(contenido_archivo)
                         duplicado_local = next(
@@ -3358,6 +3481,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             "tipo_documento": tipo_documento_final,
                             "tipo_caso_detectado": tipo_detectado,
                             "huella": huella,
+                            "ruta_local": ruta_local,
                             "pendiente": not bool(fecha_registro_previa),
                         })
 
@@ -3456,11 +3580,22 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                     archivo.name for archivo in archivos_ordenados
                                 ],
                                 "huella": huella_unificado,
+                                "ruta_local": guardar_documento_local(
+                                    pdf_unificado,
+                                    nombre_unificado,
+                                ),
                             })
                             st.info(
                                 "Se creó un PDF unificado respetando el orden seleccionado. "
                                 "Los archivos fuente quedan registrados en el expediente."
                             )
+                    barra_guardado.progress(
+                        1.0,
+                        text="Documentos preparados y guardados correctamente.",
+                    )
+                    estado_guardado.success(
+                        "Todos los documentos terminaron de procesarse."
+                    )
 
                 datos_detectados = {}
                 tipos_detectados = {
@@ -3833,10 +3968,16 @@ elif st.session_state.navegacion == "Consulta & Archivo":
             for p in paginas:
                 cp1, cp2, cp3 = st.columns([3, 1.5, 1.5])
                 cp1.write(f"Página {p['pagina_id']}: {p['nombre']} ({p['tamano']})")
-                if p.get("drive_id") and drive_service:
+                if (p.get("drive_id") and drive_service) or p.get("ruta_local"):
                     if cp2.button("Ver documento", key=f"view_drive_{exp['radicado_padre']}_{p['pagina_id']}"):
                         try:
-                            contenido = descargar_archivo_drive(drive_service, p["drive_id"])
+                            contenido = (
+                                descargar_archivo_drive(drive_service, p["drive_id"])
+                                if p.get("drive_id") and drive_service
+                                else leer_documento_local(p)
+                            )
+                            if not contenido:
+                                raise FileNotFoundError("La copia local del documento no existe.")
                             with st.expander(f"Vista previa: {p['nombre']}", expanded=True):
                                 mostrar_documento_en_aplicacion(
                                     contenido,
@@ -3847,7 +3988,13 @@ elif st.session_state.navegacion == "Consulta & Archivo":
                             st.error(f"No fue posible mostrar el documento: {error}")
                     if puede_descargar:
                         try:
-                            contenido_descarga = descargar_archivo_drive(drive_service, p["drive_id"])
+                            contenido_descarga = (
+                                descargar_archivo_drive(drive_service, p["drive_id"])
+                                if p.get("drive_id") and drive_service
+                                else leer_documento_local(p)
+                            )
+                            if not contenido_descarga:
+                                raise FileNotFoundError("La copia local del documento no existe.")
                             cp3.download_button(
                                 "Descargar",
                                 data=contenido_descarga,
@@ -3915,13 +4062,19 @@ elif st.session_state.navegacion == "Consulta & Archivo":
                 for p in paginas:
                     col_info, col_view, col_download = st.columns([3, 1, 1])
                     col_info.write(f"{p.get('nombre', 'Documento')} ({p.get('tamano', '')})")
-                    if p.get("drive_id") and drive_service:
+                    if (p.get("drive_id") and drive_service) or p.get("ruta_local"):
                         if col_view.button(
                             "Ver",
                             key=f"view_multi_{exp.get('radicado_padre')}_{p.get('pagina_id')}",
                         ):
                             try:
-                                contenido = descargar_archivo_drive(drive_service, p["drive_id"])
+                                contenido = (
+                                    descargar_archivo_drive(drive_service, p["drive_id"])
+                                    if p.get("drive_id") and drive_service
+                                    else leer_documento_local(p)
+                                )
+                                if not contenido:
+                                    raise FileNotFoundError("La copia local del documento no existe.")
                                 with st.expander(
                                     f"Vista previa: {p.get('nombre', 'Documento')}",
                                     expanded=True,
@@ -3935,7 +4088,13 @@ elif st.session_state.navegacion == "Consulta & Archivo":
                                 st.error(f"No fue posible mostrar el documento: {error}")
                         if puede_descargar:
                             try:
-                                contenido = descargar_archivo_drive(drive_service, p["drive_id"])
+                                contenido = (
+                                    descargar_archivo_drive(drive_service, p["drive_id"])
+                                    if p.get("drive_id") and drive_service
+                                    else leer_documento_local(p)
+                                )
+                                if not contenido:
+                                    raise FileNotFoundError("La copia local del documento no existe.")
                                 col_download.download_button(
                                     "Descargar",
                                     data=contenido,

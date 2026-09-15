@@ -6,6 +6,7 @@ __pycache__/
 token.json
 credentials.json
 database_local.json
+documentos/
 .env
 .env.*
 !.env.example
