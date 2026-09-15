@@ -1,5 +1,5 @@
 {
-  "version": "1.1.5",
-  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.5/SistemaDesvinculaciones-Setup-1.1.5.exe",
-  "changelog": "Organización de Drive por año y tipo documental, anexos acumulativos y PDF unificado consultable."
+  "version": "1.1.6",
+  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.6/SistemaDesvinculaciones-Setup-1.1.6.exe",
+  "changelog": "Añade controles visibles para cerrar pestañas de Google Drive y Sheets sin cerrar el sistema."
 }

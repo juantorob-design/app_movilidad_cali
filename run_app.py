@@ -214,6 +214,15 @@ def crear_aplicacion_qt(url_inicial):
             )
             barra.addAction(cuenta)
 
+            cerrar = QAction("Cerrar pestaña", self)
+            cerrar.setToolTip("Cerrar la pestaña actual de Google Drive, Sheets u otra página")
+            cerrar.triggered.connect(self.cerrar_pestana_actual)
+            barra.addAction(cerrar)
+
+            sistema = QAction("Volver al sistema", self)
+            sistema.triggered.connect(self.mostrar_sistema)
+            barra.addAction(sistema)
+
         def pagina_actual(self):
             widget = self.contenido.currentWidget()
             return widget if isinstance(widget, QWebEngineView) else None
@@ -255,6 +264,14 @@ def crear_aplicacion_qt(url_inicial):
                 self.tabs.removeTab(indice)
                 widget.deleteLater()
                 self.mostrar_sistema()
+
+        def cerrar_pestana_actual(self):
+            """Cierra la pestaña externa activa sin cerrar la aplicación."""
+            if self.contenido.currentWidget() is not self.tabs:
+                return
+            indice = self.tabs.currentIndex()
+            if indice >= 0:
+                self.cerrar_pestana(indice)
 
     aplicacion = QApplication.instance() or QApplication(sys.argv)
     aplicacion.setApplicationName("Sistema de Desvinculaciones")
