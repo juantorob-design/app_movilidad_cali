@@ -2038,8 +2038,22 @@ def _texto_historico(valor):
 def _fecha_historica(valor):
     if valor is None or (isinstance(valor, float) and pd.isna(valor)):
         return ""
-    fecha = pd.to_datetime(valor, errors="coerce")
-    return "" if pd.isna(fecha) else fecha.strftime("%Y-%m-%d")
+    if isinstance(valor, pd.Timestamp):
+        return valor.strftime("%Y-%m-%d")
+    texto = str(valor).strip()
+    if not texto:
+        return ""
+    try:
+        if texto.isdigit() or re.fullmatch(r"\d+(?:\.\d+)?", texto):
+            numero = float(texto)
+            if math.isfinite(numero):
+                fecha = pd.to_datetime(numero, unit="D", origin="1899-12-30", errors="coerce")
+                if not pd.isna(fecha):
+                    return fecha.strftime("%Y-%m-%d")
+        fecha = pd.to_datetime(texto, dayfirst=True, errors="coerce")
+        return "" if pd.isna(fecha) else fecha.strftime("%Y-%m-%d")
+    except Exception:
+        return ""
 
 
 def _valor_fila_normalizada(fila, encabezados, *nombres):
