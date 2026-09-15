@@ -179,6 +179,15 @@ con ID `1oQ5GnxSj4_gGA-p2NjlN3o0uDOLaIELZu4gpohLK6Uo`, ubicado en la carpeta
 principal de Drive. El archivo antiguo `DESVINCULACIONES ADMIN APP` ya no forma
 parte de la configuración activa.
 
+Los documentos se organizan en Drive con la estructura
+`PDFS Escaneados/AÑO/RADICADO_PLACA_FECHA_UBICACION`. Dentro de cada expediente
+se crea una subcarpeta por tipo documental, como `Solicitud`, `Recurso`,
+`Resolución` o `Notificación`. El PDF unificado permanece en la carpeta raíz
+del expediente y se reconstruye al agregar anexos, conservando también los
+documentos individuales para consulta y descarga. Los anexos cargados sin fecha
+se guardan temporalmente en `Pendientes` y se mueven a la subcarpeta documental
+correspondiente cuando el expediente queda asociado a su fecha.
+
 ## 5. Seguridad y permisos
 
 Los roles disponibles son:

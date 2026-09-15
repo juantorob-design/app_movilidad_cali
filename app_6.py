@@ -1004,6 +1004,20 @@ def carpeta_drive_para_pendientes(service):
     return buscar_o_crear_carpeta_drive(service, escaneados_id, "Pendientes")
 
 
+def carpeta_drive_para_documento(service, carpeta_expediente_id, tipo_documento):
+    """Obtiene una subcarpeta del expediente para cada tipo documental."""
+    nombre = re.sub(
+        r"[^A-Za-z0-9ÁÉÍÓÚáéíóúÑñÜü -]+",
+        "",
+        str(tipo_documento or "Otro"),
+    ).strip() or "Otro"
+    return buscar_o_crear_carpeta_drive(
+        service,
+        carpeta_expediente_id,
+        nombre,
+    )
+
+
 def mover_archivo_drive(service, file_id, carpeta_destino_id):
     """Mueve un archivo pendiente sin descargarlo ni volverlo a subir."""
     if not service or not file_id or not carpeta_destino_id:
@@ -1425,9 +1439,13 @@ def extraer_texto_ocr_pixmap(pixmap):
 
 
 def clasificar_tipo_documento(texto, tipo_fallback):
-    evidencia = texto.lower()
+    evidencia = normalizar_texto_documento(texto).lower()
     reglas = [
-        ("Desistimiento", r"desistim|desiste"),
+        (
+            "Desistimiento",
+            r"desistim|desiste|declara(?:r)?\s+(?:el\s+)?desistimiento|"
+            r"desistimiento\s+de\s+una\s+solicitud",
+        ),
         ("Recurso", r"\brecurso\b|reposici[oó]n|apelaci[oó]n"),
         ("Resolución", r"\bresoluci[oó]n\b"),
         ("Notificación", r"notificaci[oó]n|citado|aviso"),
@@ -1507,6 +1525,10 @@ def renderizar_checklist_documental(tipo_caso, documentos_presentes):
     """Muestra el checklist del proceso y sus documentos detectados."""
     requeridos = documentos_requeridos_por_caso(tipo_caso)
     presentes = set(documentos_presentes or [])
+    if tipo_caso == "Desistimiento":
+        presentes.add("Desistimiento")
+    elif tipo_caso == "Con recurso":
+        presentes.add("Recurso")
     faltantes = [nombre for nombre in requeridos if nombre not in presentes]
     st.markdown("#### Checklist documental")
     st.caption(f"Proceso seleccionado: **{tipo_caso}**")
@@ -3152,7 +3174,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
             f"correo_{carga_id}": datos_carga.get("correo", ""),
             f"funcionario_{carga_id}": datos_carga.get(
                 "funcionario",
-                datos_usuario.get("alias", ""),
+                "",
             ),
             f"observacion_{carga_id}": datos_carga.get("observacion", ""),
             f"tipo_caso_{carga_id}": next(
@@ -3308,7 +3330,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 )
                 funcionario_registro = st.text_input(
                     "Funcionario que desvincula",
-                    value=datos_carga.get("funcionario", datos_usuario.get("alias", "")),
+                    value=datos_carga.get("funcionario", ""),
                     key=f"funcionario_{carga_id}",
                 )
             with datos_col3:
@@ -3387,7 +3409,11 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     total_expedientes = siguiente_numero_expediente()
                     caja, folder, cod_ub = calcular_ubicacion(total_expedientes)
 
-                canvas_list = []
+                canvas_list = [
+                    documento.copy()
+                    for documento in (existente or {}).get("canvas_paginas", [])
+                    if documento.get("tipo_documento") != "Expediente completo"
+                ]
                 documentos_detectados = []
                 archivos_ordenados = archivos_canvas or []
                 carpeta_expediente_drive_id = None
@@ -3514,7 +3540,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         nombre_drive = nombre_documento_expediente(
                             datos_pdf.get("radicado_padre") or radicado_padre,
                             datos_pdf.get("placa") or matricula_qx,
-                            "PENDIENTE",
+                            str(fecha_registro_previa or "PENDIENTE"),
                             tipo_documento_final,
                             os.path.splitext(nombre_original)[1] or ".pdf",
                         )
@@ -3548,29 +3574,36 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             continue
                         carpeta_documento_id = carpeta_expediente_drive_id
                         if drive_service and carpeta_documento_id:
-                            duplicado_drive = buscar_archivo_drive(
+                            carpeta_documento_id = carpeta_drive_para_documento(
                                 drive_service,
-                                carpeta_documento_id,
-                                nombre_drive,
-                                contenido_archivo,
+                                carpeta_expediente_drive_id,
+                                tipo_documento_final,
                             )
-                            if duplicado_drive:
-                                file_id = duplicado_drive.get("id")
-                                drive_url = duplicado_drive.get("webViewLink")
-                            else:
-                                file_id, drive_url = subir_archivo_a_drive(
+                            if carpeta_documento_id:
+                                duplicado_drive = buscar_archivo_drive(
                                     drive_service,
-                                    io.BytesIO(contenido_archivo),
-                                    nombre_drive,
                                     carpeta_documento_id,
+                                    nombre_drive,
+                                    contenido_archivo,
                                 )
+                                if duplicado_drive:
+                                    file_id = duplicado_drive.get("id")
+                                    drive_url = duplicado_drive.get("webViewLink")
+                                else:
+                                    file_id, drive_url = subir_archivo_a_drive(
+                                        drive_service,
+                                        io.BytesIO(contenido_archivo),
+                                        nombre_drive,
+                                        carpeta_documento_id,
+                                    )
                         canvas_list.append({
-                            "pagina_id": idx + 1,
+                            "pagina_id": len(canvas_list) + 1,
                             "nombre": nombre_drive,
                             "nombre_original": nombre_fuente,
                             "tamano": f"{round(len(contenido_archivo) / 1024, 1)} KB",
                             "drive_id": file_id,
                             "drive_url": drive_url,
+                            "drive_folder_id": carpeta_documento_id,
                             "metadatos_pdf": datos_pdf,
                             "tipo_documento": tipo_documento_final,
                             "tipo_caso_detectado": tipo_detectado,
@@ -3616,7 +3649,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             nombre_unificado = nombre_documento_expediente(
                                 radicado_padre,
                                 matricula_qx,
-                                str(fecha_solicitud),
+                                str(fecha_registro_previa),
                                 f"Expediente-completo_{cod_ub}",
                                 ".pdf",
                             )
@@ -3634,7 +3667,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             if drive_service:
                                 carpeta_unificado_id = carpeta_expediente_drive_id or carpeta_drive_para_fecha(
                                     drive_service,
-                                    str(fecha_solicitud),
+                                    str(fecha_registro_previa),
                                 )
                                 copia_unificada = buscar_archivo_drive(
                                     drive_service,
@@ -3866,10 +3899,15 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 if fecha_registro and pendientes_asociados:
                     for pendiente in pendientes_asociados:
                         if drive_service and carpeta_expediente_drive_id:
+                            carpeta_pendiente_destino = carpeta_drive_para_documento(
+                                drive_service,
+                                carpeta_expediente_drive_id,
+                                pendiente.get("tipo_documento", "Otro"),
+                            )
                             mover_archivo_drive(
                                 drive_service,
                                 pendiente.get("drive_id"),
-                                carpeta_expediente_drive_id,
+                                carpeta_pendiente_destino or carpeta_expediente_drive_id,
                             )
                         pendiente["pendiente"] = False
                         pendiente["reubicado_en"] = registro_datos.get("drive_folder", "")
@@ -3890,7 +3928,22 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         documento for documento in paginas_previas
                         if documento.get("tipo_documento") != "Expediente completo"
                     ]
-                    registro_datos["canvas_paginas"] = paginas_previas + canvas_list
+                    documentos_unicos = []
+                    claves_documentos = set()
+                    for documento in paginas_previas + canvas_list:
+                        clave = (
+                            documento.get("huella")
+                            or documento.get("drive_id")
+                            or (
+                                documento.get("nombre"),
+                                documento.get("tipo_documento"),
+                            )
+                        )
+                        if clave in claves_documentos:
+                            continue
+                        claves_documentos.add(clave)
+                        documentos_unicos.append(documento)
+                    registro_datos["canvas_paginas"] = documentos_unicos
                     registro_datos["documentos_esperados"] = sorted(
                         set(existente_final.get("documentos_esperados", []))
                         | set(documentos_esperados)
