@@ -1,5 +1,5 @@
 {
-  "version": "1.1.1",
-  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.1/SistemaDesvinculaciones-Setup-1.1.1.exe",
-  "changelog": "Corrección de interpretación de fechas históricas en formatos día/mes/año y fechas seriales de Excel."
+  "version": "1.1.2",
+  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.2/SistemaDesvinculaciones-Setup-1.1.2.exe",
+  "changelog": "Actualización automática completa: descarga desde GitHub, instalación silenciosa y reinicio de la aplicación."
 }

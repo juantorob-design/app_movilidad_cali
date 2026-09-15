@@ -4,9 +4,10 @@ import requests
 import subprocess
 import threading
 import tempfile
+from urllib.parse import urlparse
 
 # Versión actual de la aplicación instalada
-CURRENT_VERSION = "1.1.1"
+CURRENT_VERSION = "1.1.2"
 
 # GitHub Raw será la fuente pública de versiones cuando el repositorio se publique.
 DEFAULT_VERSION_CHECK_URL = (
@@ -99,12 +100,18 @@ def prompt_user_to_update(remote_version, download_url, changelog):
     threading.Thread(target=_mostrar_dialogo, daemon=True).start()
 
 def download_and_apply_update(download_url):
-    """Descarga el instalador y deja que Inno Setup actualice la instalación."""
+    """Descarga el instalador, cierra la app y reinicia la versión actualizada."""
     if not download_url:
         return
 
     if not getattr(sys, 'frozen', False):
         return
+    parsed_url = urlparse(download_url)
+    if (
+        parsed_url.scheme != "https"
+        or parsed_url.netloc.lower() not in {"github.com", "objects.githubusercontent.com"}
+    ):
+        raise ValueError("La URL de actualización no pertenece a GitHub.")
 
     instalador = os.path.join(
         tempfile.gettempdir(),
@@ -114,6 +121,7 @@ def download_and_apply_update(download_url):
         tempfile.gettempdir(),
         f"SistemaDesvinculaciones-update-{os.getpid()}.cmd",
     )
+    ejecutable = obtener_ruta_ejecutable()
 
     try:
         response = requests.get(download_url, stream=True, timeout=60)
@@ -124,7 +132,9 @@ def download_and_apply_update(download_url):
                     f.write(chunk)
 
         bat_content = f"""@echo off
-start "" /wait "{instalador}" /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS
+timeout /t 2 /nobreak >nul
+start "" /wait "{instalador}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS
+start "" "{ejecutable}"
 del /f /q "{instalador}" >nul 2>&1
 del /f /q "%~f0" >nul 2>&1
 """
@@ -135,7 +145,8 @@ del /f /q "%~f0" >nul 2>&1
             ["cmd.exe", "/c", script_limpieza],
             creationflags=0x08000000,
         )
-        sys.exit(0)
+        # sys.exit solo termina el hilo de Streamlit que llamó esta función.
+        os._exit(0)
 
     except (OSError, requests.RequestException):
         for ruta in (instalador, script_limpieza):
