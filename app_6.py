@@ -70,12 +70,15 @@ except ImportError:
     RapidOCR = None
 
 _ocr_engine = None
+_ocr_cache_writes_pending = 0
 # Los expedientes recibidos son escaneos y pueden superar ampliamente ocho
 # páginas. Limitar el OCR dejaba sin leer la mayor parte del expediente.
 OCR_MAX_PAGES = None
 # 1.2x conserva una resolución suficiente para formularios escaneados y
 # reduce el costo del OCR frente al renderizado anterior de 1.5x.
 OCR_RENDER_SCALE = 1.2
+OCR_CACHE_VERSION = "2"
+_ocr_persistent_cache = None
 
 try:
     from updater import obtener_actualizacion_disponible, download_and_apply_update
@@ -107,6 +110,26 @@ def resolver_ruta(ruta_relativa):
 
 def resolver_dato(ruta_relativa):
     return os.path.join(dir_datos(), ruta_relativa)
+
+
+def inicializar_memoria_local():
+    """Prepara la memoria local usada por OCR y datos de la instalación."""
+    carpeta = dir_datos()
+    os.makedirs(carpeta, exist_ok=True)
+    ruta_cache = os.path.join(carpeta, "ocr_cache.json")
+    if not os.path.exists(ruta_cache):
+        temporal = f"{ruta_cache}.tmp"
+        try:
+            with open(temporal, "w", encoding="utf-8") as archivo:
+                json.dump({}, archivo)
+            os.replace(temporal, ruta_cache)
+        except OSError:
+            if os.path.exists(temporal):
+                os.remove(temporal)
+
+
+inicializar_memoria_local()
+
 
 def obtener_ruta_imagen(nombre_archivo):
     return resolver_ruta(os.path.join("images", nombre_archivo))
@@ -163,6 +186,18 @@ st.set_page_config(
 if 'updater_checked' not in st.session_state:
     st.session_state.updater_checked = True
     st.session_state.actualizacion_disponible = obtener_actualizacion_disponible()
+else:
+    actualizacion_guardada = st.session_state.get("actualizacion_disponible")
+    if actualizacion_guardada:
+        try:
+            from updater import is_newer_version, CURRENT_VERSION
+            if not is_newer_version(
+                actualizacion_guardada.get("version", ""),
+                CURRENT_VERSION,
+            ):
+                st.session_state.actualizacion_disponible = None
+        except (ImportError, TypeError, ValueError):
+            st.session_state.actualizacion_disponible = None
 
 SUPER_ADMIN_EMAIL = "juan.torob@cun.edu.co"
 SUPABASE_URL = os.environ.get(
@@ -1041,6 +1076,73 @@ def huella_contenido(contenido):
     return hashlib.sha256(contenido).hexdigest()
 
 
+def _ruta_cache_ocr():
+    return resolver_dato("ocr_cache.json")
+
+
+def _cargar_cache_ocr():
+    global _ocr_persistent_cache
+    if _ocr_persistent_cache is not None:
+        return _ocr_persistent_cache
+    ruta = _ruta_cache_ocr()
+    try:
+        with open(ruta, "r", encoding="utf-8") as archivo:
+            cache = json.load(archivo)
+        _ocr_persistent_cache = cache if isinstance(cache, dict) else {}
+    except (OSError, ValueError, TypeError):
+        _ocr_persistent_cache = {}
+    return _ocr_persistent_cache
+
+
+def _guardar_cache_ocr():
+    cache = _ocr_persistent_cache
+    if not isinstance(cache, dict):
+        return
+    ruta = _ruta_cache_ocr()
+    temporal = f"{ruta}.tmp"
+    try:
+        os.makedirs(os.path.dirname(ruta), exist_ok=True)
+        with open(temporal, "w", encoding="utf-8") as archivo:
+            json.dump(cache, archivo, ensure_ascii=False)
+        os.replace(temporal, ruta)
+    except OSError:
+        if os.path.exists(temporal):
+            os.remove(temporal)
+
+
+def _clave_cache_ocr(contenido, pagina, escala):
+    return f"{OCR_CACHE_VERSION}:{huella_contenido(contenido)}:{pagina}:{escala:g}"
+
+
+def obtener_texto_ocr_pagina(contenido, pagina, objeto_pagina, escala=OCR_RENDER_SCALE):
+    """Lee una página usando la caché persistente para no repetir OCR costoso."""
+    if fitz is None or RapidOCR is None:
+        return ""
+    cache = _cargar_cache_ocr()
+    clave = _clave_cache_ocr(contenido, pagina, escala)
+    texto_guardado = cache.get(clave)
+    if isinstance(texto_guardado, str):
+        return texto_guardado
+    global _ocr_engine
+    if _ocr_engine is None:
+        _ocr_engine = RapidOCR()
+    pixmap = objeto_pagina.get_pixmap(
+        matrix=fitz.Matrix(escala, escala),
+        alpha=False,
+    )
+    resultado, _ = _ocr_engine(pixmap.tobytes("png"))
+    texto = normalizar_texto_documento(
+        " ".join(str(elemento[1]) for elemento in (resultado or []))
+    )
+    global _ocr_cache_writes_pending
+    cache[clave] = texto
+    _ocr_cache_writes_pending += 1
+    if _ocr_cache_writes_pending >= 8:
+        _guardar_cache_ocr()
+        _ocr_cache_writes_pending = 0
+    return texto
+
+
 def buscar_archivo_drive(service, folder_id, file_name, contenido):
     """Busca una copia por nombre o contenido antes de crear otro archivo."""
     if not service:
@@ -1097,6 +1199,7 @@ def descargar_archivo_drive(service, file_id):
 
 def _extraer_texto_pdf(contenido, progreso=None):
     """Devuelve texto digital y usa OCR local como respaldo para PDFs escaneados."""
+    global _ocr_cache_writes_pending
     if PdfReader is None:
         return ""
     try:
@@ -1108,17 +1211,18 @@ def _extraer_texto_pdf(contenido, progreso=None):
         texto = normalizar_texto_documento(texto)
         texto_util = bool(
             re.search(
-                r"\b(?:radicado|radicaci[oó]n|placa|matr[ií]cula|solicitud|petici[oó]n)\b",
+                r"\b(?:radicado|radicaci[oó]n|placa|matr[ií]cula|solicitud|"
+                r"petici[oó]n|resoluci[oó]n|notificaci[oó]n|recurso|"
+                r"desistim|desiste)\b",
                 texto,
                 flags=re.IGNORECASE,
             )
         )
-        if texto and texto_util:
-            datos_basicos = extraer_datos_pdf(contenido, texto=texto)
-            if len(datos_basicos) >= 2:
-                if progreso:
-                    progreso(1, 1)
-                return texto
+        datos_basicos = extraer_datos_pdf(contenido, texto=texto) if texto else {}
+        if texto and texto_util and len(datos_basicos) >= 4:
+            if progreso:
+                progreso(1, 1)
+            return texto
     except Exception:
         texto = ""
     if fitz is None or RapidOCR is None:
@@ -1128,21 +1232,24 @@ def _extraer_texto_pdf(contenido, progreso=None):
         if _ocr_engine is None:
             _ocr_engine = RapidOCR()
         documento = fitz.open(stream=contenido, filetype="pdf")
-        paginas = []
+        paginas = [texto] if texto else []
         total_paginas = len(documento)
         for indice, pagina in enumerate(documento):
             if OCR_MAX_PAGES is not None and indice >= OCR_MAX_PAGES:
                 break
-            pixmap = pagina.get_pixmap(
-                matrix=fitz.Matrix(OCR_RENDER_SCALE, OCR_RENDER_SCALE),
-                alpha=False,
+            texto_pagina = obtener_texto_ocr_pagina(
+                contenido,
+                indice,
+                pagina,
             )
-            resultado, _ = _ocr_engine(pixmap.tobytes("png"))
-            if resultado:
-                paginas.append(" ".join(str(elemento[1]) for elemento in resultado))
+            if texto_pagina:
+                paginas.append(texto_pagina)
             if progreso:
                 progreso(indice + 1, total_paginas)
         documento.close()
+        if _ocr_cache_writes_pending:
+            _guardar_cache_ocr()
+            _ocr_cache_writes_pending = 0
         return normalizar_texto_documento(" ".join(paginas))
     except Exception:
         return texto
@@ -1196,19 +1303,30 @@ def extraer_datos_pdf(contenido, texto=None):
         "fecha_solicitud": [
             r"(?:fecha\s*(?:de\s*)?(?:creaci[oó]n|radicaci[oó]n|solicitud|recibido))\s*[:#\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
             r"\b(\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\s+de\s+20\d{2})\b",
-            r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b",
+            r"\b(\d{1,2}\s+(?:de\s+)?(?:ene(?:ro)?|feb(?:rero)?|mar(?:zo)?|"
+            r"abr(?:il)?|may(?:o)?|jun(?:io)?|jul(?:io)?|ago(?:sto)?|"
+            r"sep(?:tiembre)?|set(?:iembre)?|oct(?:ubre)?|nov(?:iembre)?|"
+            r"dic(?:iembre)?)\s+(?:de\s+)?20\d{2})\b",
         ],
         "fecha_radicacion": [
             r"(?:fecha\s+de\s+)?radicaci[oó]n\s*[:#\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+            r"(?:fecha\s+de\s+)?radicaci[oó]n\s*[:#\-]?\s*(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
         ],
         "fecha_recurso": [
             r"fecha\s+(?:de\s+)?recurso\s*[:#\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+            r"fecha\s+(?:de\s+)?recurso\s*[:#\-]?\s*(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
+        ],
+        "fecha_resolucion": [
+            r"fecha\s+(?:de\s+)?resoluci[oó]n\s*[:#\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+            r"fecha\s+(?:de\s+)?resoluci[oó]n\s*[:#\-]?\s*(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
         ],
         "fecha_notificacion": [
             r"fecha\s+(?:de\s+)?notificaci[oó]n\s*[:#\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+            r"fecha\s+(?:de\s+)?notificaci[oó]n\s*[:#\-]?\s*(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
         ],
         "fecha_ejecutoria": [
             r"fecha\s+(?:de\s+)?(?:constancia\s+de\s+)?ejecutoria\s*[:#\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+            r"fecha\s+(?:de\s+)?(?:constancia\s+de\s+)?ejecutoria\s*[:#\-]?\s*(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
         ],
         "correo": [
             r"\b([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})\b",
@@ -1227,16 +1345,16 @@ def extraer_datos_pdf(contenido, texto=None):
             r"\b(?:representante\s+legal|gerente)\s*[:#\-]?\s*([A-ZÁÉÍÓÚÑ][^|]{3,100}?)(?=\s+(?:identificado|con\s+c[eé]dula|NIT|solicito)\b)",
         ],
         "direccion_empresa": [
-            r"\bdirecci[oó]n\s+(?:de\s+)?empresa\s*[:#\-]\s*([^|]{5,150}?)(?=\s+(?:propietario|NIT|radicado)\b|$)",
+            r"\bdirecci[oó]n\s+(?:de\s+)?empresa\s*[:#\-]\s*([^|]{5,150}?)(?=\s+(?:propietario|NIT|radicado|nueva\s+empresa)\b|$)",
         ],
         "direccion_propietario": [
-            r"\bdirecci[oó]n\s+(?:del\s+)?propietario\s*[:#\-]\s*([^|]{5,150}?)(?=\s+(?:propietario|c[eé]dula|placa|radicado)\b|$)",
+            r"\bdirecci[oó]n\s+(?:del\s+)?propietario\s*[:#\-]\s*([^|]{5,150}?)(?=\s+(?:propietario|c[eé]dula|placa|radicado|nueva\s+empresa)\b|$)",
         ],
         "nueva_empresa": [
             r"\bnueva\s+empresa\s*[:#\-]\s*([^|]{3,120}?)(?=\s+(?:NIT|radicado|placa|fecha)\b|$)",
         ],
         "tipo_notificacion": [
-            r"\bnotificaci[oó]n\s+(?:por\s+)?(citación|citaci[oó]n|aviso|publicaci[oó]n)\b",
+            r"\bnotificaci[oó]n\s+(?:por\s+)?(personal|citación|citaci[oó]n|aviso|publicaci[oó]n|electrónica|electronica|correo)\b",
         ],
         "funcionario": [
             r"\bfuncionario\s+(?:que\s+)?desvincula\s*[:#\-]\s*([^|]{3,100}?)(?=\s+(?:fecha|observaci[oó]n|estado)\b|$)",
@@ -1252,6 +1370,9 @@ def extraer_datos_pdf(contenido, texto=None):
         "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5,
         "junio": 6, "julio": 7, "agosto": 8, "septiembre": 9,
         "setiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12,
+        "ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6,
+        "jul": 7, "ago": 8, "sep": 9, "set": 9, "oct": 10, "nov": 11,
+        "dic": 12,
     }
     datos = {}
     for campo, opciones in patrones.items():
@@ -1266,7 +1387,7 @@ def extraer_datos_pdf(contenido, texto=None):
                 elif campo.startswith("fecha_"):
                     fecha_texto = valor.lower()
                     fecha_larga = re.fullmatch(
-                        r"(\d{1,2})\s+de\s+([a-záéíóú]+)\s+de\s+(20\d{2})",
+                        r"(\d{1,2})\s+(?:de\s+)?([a-záéíóú]+)\s+(?:de\s+)?(20\d{2})",
                         fecha_texto,
                     )
                     if fecha_larga:
@@ -1284,11 +1405,20 @@ def extraer_datos_pdf(contenido, texto=None):
                                 valor = f"{anio}-{mes.zfill(2)}-{dia.zfill(2)}"
                 elif campo in {
                     "correo", "nit", "cedula", "empresa", "propietario",
-                    "direccion_empresa", "funcionario", "resolucion",
+                    "direccion_empresa", "direccion_propietario", "nueva_empresa",
+                    "tipo_notificacion", "funcionario", "resolucion",
                 }:
                     valor = re.sub(r"\s+", " ", valor).strip()
                 datos[campo] = valor
                 break
+    if re.fullmatch(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", str(datos.get("resolucion", ""))):
+        coincidencia_resolucion = re.search(
+            r"\bresoluci[oó]n\s+(?:No\.?|N[°ºo]\.?)\s*[:#\-]?\s*([A-Z0-9-]{3,40})\b",
+            texto,
+            flags=re.IGNORECASE,
+        )
+        if coincidencia_resolucion:
+            datos["resolucion"] = coincidencia_resolucion.group(1).strip()
     return datos
 
 
@@ -1328,6 +1458,7 @@ def convertir_imagen_a_pdf(contenido, nombre):
 @lru_cache(maxsize=4)
 def separar_pdf_completo(contenido, tipo_fallback):
     """Quita páginas vacías y separa un PDF por bloques documentales detectables."""
+    global _ocr_cache_writes_pending
     if PdfReader is None or PdfWriter is None:
         return [{"contenido": contenido, "tipo": tipo_fallback, "paginas": 0}]
     try:
@@ -1344,19 +1475,27 @@ def separar_pdf_completo(contenido, tipo_fallback):
             pixmap = None
             if documento_visual:
                 pixmap = documento_visual.load_page(numero_pagina).get_pixmap(
-                    matrix=fitz.Matrix(0.12, 0.12),
+                    matrix=fitz.Matrix(1.0, 1.0),
                     alpha=False,
                 )
             if len(texto) < 8 and pagina_pixeles_blancos(pixmap):
                 continue
-            if not tiene_texto_digital:
-                if actual is None:
-                    actual = {"tipo": tipo_fallback, "paginas": []}
-                    grupos.append(actual)
-                actual["paginas"].append(pagina)
-                continue
-            if not texto:
-                texto = extraer_texto_ocr_pixmap(pixmap)
+            requiere_ocr = not texto
+            if requiere_ocr:
+                texto = obtener_texto_ocr_pagina(
+                    contenido,
+                    numero_pagina,
+                    documento_visual.load_page(numero_pagina),
+                )
+            elif not tiene_texto_digital:
+                texto = f"{texto} {obtener_texto_ocr_pagina(contenido, numero_pagina, documento_visual.load_page(numero_pagina))}".strip()
+            elif not re.search(
+                r"resoluci[oó]n|notificaci[oó]n|recurso|desistim|"
+                r"solicitud|petici[oó]n",
+                texto,
+                flags=re.IGNORECASE,
+            ):
+                texto = f"{texto} {obtener_texto_ocr_pagina(contenido, numero_pagina, documento_visual.load_page(numero_pagina))}".strip()
             tipo = clasificar_tipo_documento(texto, tipo_fallback)
             if actual and actual["tipo"] == tipo:
                 actual["paginas"].append(pagina)
@@ -1365,6 +1504,9 @@ def separar_pdf_completo(contenido, tipo_fallback):
                 grupos.append(actual)
         if documento_visual:
             documento_visual.close()
+        if _ocr_cache_writes_pending:
+            _guardar_cache_ocr()
+            _ocr_cache_writes_pending = 0
         if not grupos:
             return []
         resultado = []
@@ -1440,14 +1582,21 @@ def extraer_texto_ocr_pixmap(pixmap):
 
 def clasificar_tipo_documento(texto, tipo_fallback):
     evidencia = normalizar_texto_documento(texto).lower()
+    if re.search(
+        r"\bsin\s+recurso\b|no\s+interpuso|no\s+present[oó]|"
+        r"sin\s+interponer",
+        evidencia,
+    ):
+        if re.search(r"resoluci[oó]n|acto\s+administrativo", evidencia):
+            return "Resolución"
     reglas = [
         (
             "Desistimiento",
             r"desistim|desiste|declara(?:r)?\s+(?:el\s+)?desistimiento|"
             r"desistimiento\s+de\s+una\s+solicitud",
         ),
-        ("Recurso", r"\brecurso\b|reposici[oó]n|apelaci[oó]n"),
         ("Resolución", r"\bresoluci[oó]n\b"),
+        ("Recurso", r"\brecurso\b|reposici[oó]n|apelaci[oó]n"),
         ("Notificación", r"notificaci[oó]n|citado|aviso"),
         ("Constancia de ejecutoria", r"ejecutoria|firmeza"),
         ("Solicitud", r"derecho de petici[oó]n|solicito|solicitud"),
@@ -1470,7 +1619,16 @@ def tipos_documentales_detectados(texto, tipo_fallback):
         ("Solicitud", r"derecho de petici[oó]n|solicito|solicitud"),
     ]
     detectados = {
-        tipo for tipo, patron in reglas if re.search(patron, evidencia)
+        tipo for tipo, patron in reglas
+        if re.search(patron, evidencia)
+        and not (
+            tipo == "Recurso"
+            and re.search(
+                r"\bsin\s+recurso\b|no\s+interpuso|no\s+present[oó]|"
+                r"sin\s+interponer",
+                evidencia,
+            )
+        )
     }
     return detectados or {tipo_fallback}
 
@@ -1487,21 +1645,24 @@ def nombre_documento_expediente(radicado, placa, fecha, ubicacion, extension):
 
 def clasificar_tipo_caso(texto="", nombre=""):
     """Identifica uno de los tres desenlaces válidos del expediente."""
-    evidencia = f"{nombre} {texto}".lower()
+    evidencia = normalizar_texto_documento(f"{nombre} {texto}").lower()
     if re.search(r"desistim|desestimiento|desistimiento|desiste", evidencia):
         return "Desistimiento"
     if re.search(
-        r"\bcon\s+recurso\b|\brecurso\s+de\s+reposici[oó]n\b|"
-        r"\binterpuso\s+recurso\b",
-        evidencia,
-    ):
-        return "Con recurso"
-    if re.search(
-        r"\bsin\s+recurso\b|no\s+interpuso\s+recurso|sin\s+interponer|"
-        r"\bno\s+present[oó]\s+recurso\b",
+        r"\bsin\s+recurso\b|no\s+interpuso\s+(?:un\s+)?recurso|"
+        r"sin\s+interponer\s+(?:el\s+)?recurso|"
+        r"\bno\s+present[oó]\s+(?:el\s+|un\s+)?recurso\b|"
+        r"\bno\s+se\s+present[oó]\s+recurso\b",
         evidencia,
     ):
         return "Sin recurso"
+    if re.search(
+        r"\bcon\s+recurso\b|\brecurso\s+de\s+reposici[oó]n\b|"
+        r"\binterpuso\s+(?:un\s+)?recurso\b|\bpresent[oó]\s+(?:un\s+)?recurso\b|"
+        r"\bse\s+resuelve\s+el\s+recurso\b",
+        evidencia,
+    ):
+        return "Con recurso"
     return None
 
 
@@ -1679,6 +1840,7 @@ def buscar_registro_en_sheets(service, radicado="", placa=""):
             (i for i, valor in enumerate(encabezados) if valor == "PLACA"),
             None,
         )
+        coincidencia_por_placa = None
         for numero, fila in enumerate(filas[1:], start=2):
             valor_rad = str(fila[indice_rad]).strip().upper() if indice_rad is not None and len(fila) > indice_rad else ""
             valor_placa = str(fila[indice_placa]).strip().upper() if indice_placa is not None and len(fila) > indice_placa else ""
@@ -1690,16 +1852,20 @@ def buscar_registro_en_sheets(service, radicado="", placa=""):
                 bool(placa)
                 and valor_placa == str(placa).strip().upper()
             )
-            if (
-                coincide_radicado and (not placa or coincide_placa)
-            ) or (
-                coincide_placa and not radicado
-            ):
+            if coincide_radicado:
                 return {
                     "fila": fila,
                     "numero": numero,
                     "encabezados": encabezados,
                 }
+            if coincide_placa and not coincidencia_por_placa:
+                coincidencia_por_placa = {
+                    "fila": fila,
+                    "numero": numero,
+                    "encabezados": encabezados,
+                }
+        if coincidencia_por_placa and not radicado:
+            return coincidencia_por_placa
     except Exception as error:
         st.warning(f"No fue posible consultar el registro actual de Google Sheets: {error}")
     return None
@@ -1712,6 +1878,8 @@ def datos_registro_sheet(registro_sheet):
     datos = {}
     mapa = {
         "FECHA": "fecha_solicitud",
+        "FECHA SOLICITUD": "fecha_solicitud",
+        "FECHA_SOLICITUD": "fecha_solicitud",
         "PLACA": "placa",
         "RAD PADRE": "radicado_padre",
         "EMPRESA": "empresa",
@@ -1732,6 +1900,12 @@ def datos_registro_sheet(registro_sheet):
         "RECURSO": "recurso",
         "FECHA RECURSO": "fecha_recurso",
         "OBSERVACIONES": "notas",
+        "TIPO CASO": "tipo_caso",
+        "TIPO NOTIFICACION": "tipo_notificacion",
+        "FECHA NOTIFICACION": "fecha_notificacion",
+        "FECHA EJECUTORIA": "fecha_ejecutoria",
+        "FECHA REMISION REGISTRO": "fecha_remision_registro",
+        "QX VERIFICADO": "qx_verificado",
         "DRIVE FOLDER": "drive_folder",
         "DOCUMENTOS DRIVE": "documentos_drive",
         "PDF UNIFICADO": "pdf_unificado",
@@ -1750,7 +1924,11 @@ def datos_registro_sheet(registro_sheet):
         else:
             campo = mapa.get(encabezado)
         if campo and indice < len(fila) and str(fila[indice]).strip():
-            datos[campo] = str(fila[indice]).strip()
+            valor = str(fila[indice]).strip()
+            if campo == "qx_verificado":
+                datos[campo] = valor.upper() in {"SI", "SÍ", "TRUE", "1"}
+            else:
+                datos[campo] = valor
     return datos
 
 
@@ -2740,6 +2918,12 @@ if actualizacion:
                     "La actualización automática está disponible en el instalador "
                     "de Windows. Este entorno de desarrollo no puede reemplazarse."
                 )
+                if actualizacion.get("download_url"):
+                    st.link_button(
+                        "Descargar instalador manualmente",
+                        actualizacion["download_url"],
+                        width="stretch",
+                    )
             elif not actualizacion.get("download_url"):
                 st.error("La versión nueva no tiene una URL de instalador válida.")
             else:
@@ -3251,7 +3435,15 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     key=f"fecha_resolucion_{carga_id}",
                 )
             with f_col3:
-                tipos_notificacion = ["", "Citación", "Aviso", "Publicación"]
+                tipos_notificacion = [
+                    "",
+                    "Personal",
+                    "Citación",
+                    "Aviso",
+                    "Publicación",
+                    "Electrónica",
+                    "Correo",
+                ]
                 notificacion_actual = datos_carga.get("tipo_notificacion", "")
                 tipo_notificacion = st.selectbox(
                     "Tipo de notificación",

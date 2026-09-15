@@ -6,6 +6,7 @@ __pycache__/
 token.json
 credentials.json
 database_local.json
+ocr_cache.json
 documentos/
 .env
 .env.*

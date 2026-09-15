@@ -219,12 +219,20 @@ def crear_aplicacion_qt(url_inicial):
             cerrar.triggered.connect(self.cerrar_pestana_actual)
             barra.addAction(cerrar)
 
+            cerrar_todas = QAction("Cerrar externas", self)
+            cerrar_todas.setToolTip("Cerrar todas las pestañas externas y volver al sistema")
+            cerrar_todas.triggered.connect(self.cerrar_pestanas_externas)
+            barra.addAction(cerrar_todas)
+
             sistema = QAction("Volver al sistema", self)
             sistema.triggered.connect(self.mostrar_sistema)
             barra.addAction(sistema)
 
         def pagina_actual(self):
             widget = self.contenido.currentWidget()
+            if widget is self.tabs:
+                tab_actual = self.tabs.currentWidget()
+                return tab_actual if isinstance(tab_actual, QWebEngineView) else None
             return widget if isinstance(widget, QWebEngineView) else None
 
         def navegar_inicio(self):
@@ -272,6 +280,14 @@ def crear_aplicacion_qt(url_inicial):
             indice = self.tabs.currentIndex()
             if indice >= 0:
                 self.cerrar_pestana(indice)
+
+        def cerrar_pestanas_externas(self):
+            """Cierra todas las pestañas externas y deja visible el sistema."""
+            while self.tabs.count():
+                widget = self.tabs.widget(0)
+                self.tabs.removeTab(0)
+                widget.deleteLater()
+            self.mostrar_sistema()
 
     aplicacion = QApplication.instance() or QApplication(sys.argv)
     aplicacion.setApplicationName("Sistema de Desvinculaciones")

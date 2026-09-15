@@ -7,7 +7,7 @@ import tempfile
 from urllib.parse import urlparse
 
 # Versión actual de la aplicación instalada
-CURRENT_VERSION = "1.1.6"
+CURRENT_VERSION = "1.1.8"
 
 # GitHub Raw será la fuente pública de versiones cuando el repositorio se publique.
 DEFAULT_VERSION_CHECK_URL = (
@@ -28,10 +28,16 @@ def obtener_ruta_ejecutable():
 def is_newer_version(remote_ver, current_ver):
     """Compara dos strings de versión semántica (ej: '1.1.0' > '1.0.0')."""
     def parse_ver(v):
-        return [int(x) for x in str(v).replace('v', '').split('.')]
+        partes = str(v).strip().lower().lstrip("v").split(".")
+        if not partes or any(not parte.isdigit() for parte in partes):
+            raise ValueError("Versión inválida")
+        return tuple(int(parte) for parte in partes)
     try:
-        return parse_ver(remote_ver) > parse_ver(current_ver)
-    except Exception:
+        remoto = parse_ver(remote_ver)
+        actual = parse_ver(current_ver)
+        longitud = max(len(remoto), len(actual))
+        return remoto + (0,) * (longitud - len(remoto)) > actual + (0,) * (longitud - len(actual))
+    except (TypeError, ValueError):
         return False
 
 

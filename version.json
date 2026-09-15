@@ -1,5 +1,5 @@
 {
-  "version": "1.1.6",
-  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.6/SistemaDesvinculaciones-Setup-1.1.6.exe",
-  "changelog": "Añade controles visibles para cerrar pestañas de Google Drive y Sheets sin cerrar el sistema."
+  "version": "1.1.8",
+  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.8/SistemaDesvinculaciones-Setup-1.1.8.exe",
+  "changelog": "IA local OCR con caché persistente, lectura acelerada y memoria local inicializada automáticamente."
 }

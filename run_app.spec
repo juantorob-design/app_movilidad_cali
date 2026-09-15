@@ -14,7 +14,6 @@ datas += collect_data_files('googleapiclient')
 
 # Incluir metadatos de paquetes requeridos
 datas += copy_metadata('streamlit')
-datas += copy_metadata('streamlit-pdf')
 datas += copy_metadata('pywebview')
 datas += copy_metadata('google-api-python-client')
 
