@@ -51,7 +51,7 @@ st.info(
 )
 
 metricas = [
-    ("Versión operativa", "1.1.10"),
+    ("Versión operativa", "1.1.11"),
     ("Columnas de BD_DESV", 21),
     ("Desenlaces válidos", 3),
     ("Formatos de entrada", 4),
@@ -91,7 +91,7 @@ with tab_resumen:
         st.success("Distribución controlada por roles")
         st.success("Pendientes visibles y reubicables")
 
-    st.subheader("Qué cambió en la versión 1.1.10")
+    st.subheader("Qué cambió en la versión 1.1.11")
     st.markdown(
         "- Visor del PDF dentro del registro, antes de guardar.\n"
         "- Resumen de archivos, campos detectados y destino previsto.\n"
@@ -223,7 +223,7 @@ with tab_trabajo:
         "Integración de BD_DESV y DATOS con las 21 columnas reales.",
         "Preservación de datos históricos al anexar documentos.",
         "Instalador Windows con PyInstaller e Inno Setup.",
-        "Actualizador autorizado desde GitHub Raw y release 1.1.10.",
+        "Actualizador autorizado desde GitHub Raw y release 1.1.11.",
         "Pruebas de sintaxis, dependencias, servidor, ejecutable e instalador.",
         "Prueba real de Google Sheets: escritura, lectura, actualización y eliminación controlada.",
         "Corrección de escritura por fila exacta para evitar desplazamientos de columnas.",

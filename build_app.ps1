@@ -78,8 +78,12 @@ try {
         & $pythonVenv -m pip install --upgrade pip
         & $pythonVenv -m pip install -r "$PSScriptRoot\requirements.txt"
         Write-Host "Preparando ONNX Runtime DirectML para GPU Windows..." -ForegroundColor Yellow
-        & $pythonVenv -m pip uninstall -y onnxruntime
-        & $pythonVenv -m pip install --upgrade onnxruntime-directml
+        & $pythonVenv -m pip install --upgrade --force-reinstall onnxruntime-directml
+        & $pythonVenv -c "import onnxruntime; from rapidocr_onnxruntime import RapidOCR; print(onnxruntime.get_available_providers())"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: RapidOCR no pudo inicializarse con ONNX Runtime." -ForegroundColor Red
+            return
+        }
         & $pythonVenv -m pip install pyinstaller
         if ($LASTEXITCODE -ne 0) {
             Write-Host "ERROR: Ocurrió un fallo al instalar las librerías." -ForegroundColor Red

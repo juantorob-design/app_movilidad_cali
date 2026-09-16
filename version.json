@@ -1,5 +1,5 @@
 {
-  "version": "1.1.10",
-  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.10/SistemaDesvinculaciones-Setup-1.1.10.exe",
-  "changelog": "Foliación editable del expediente, conteo automático de hojas, OCR local con DirectML y sincronización documental."
+  "version": "1.1.11",
+  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.11/SistemaDesvinculaciones-Setup-1.1.11.exe",
+  "changelog": "Corrección del motor OCR DirectML, checklist documental, precarga administrativa, Drive, Sheets y actualizador."
 }

@@ -7,7 +7,7 @@ import tempfile
 from urllib.parse import urlparse
 
 # Versión actual de la aplicación instalada
-CURRENT_VERSION = "1.1.10"
+CURRENT_VERSION = "1.1.11"
 
 # GitHub Raw será la fuente pública de versiones cuando el repositorio se publique.
 DEFAULT_VERSION_CHECK_URL = (
@@ -22,7 +22,9 @@ VERSION_CHECK_URL = os.environ.get(
 def obtener_ruta_ejecutable():
     """Obtiene la ruta absoluta del ejecutable principal de Windows."""
     if getattr(sys, 'frozen', False):
-        return os.path.abspath(sys.argv[0])
+        # run_app cambia sys.argv para iniciar Streamlit; sys.executable
+        # conserva la ruta del ejecutable principal.
+        return os.path.abspath(sys.executable)
     return os.path.abspath(__file__)
 
 def is_newer_version(remote_ver, current_ver):
@@ -151,7 +153,7 @@ def download_and_apply_update(download_url):
 $installer = {_literal_powershell(instalador)}
 $application = {_literal_powershell(ejecutable)}
 Start-Sleep -Seconds 2
-$arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS')
+$arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS', '/RESTARTAPPLICATIONS')
 $process = Start-Process -FilePath $installer -ArgumentList $arguments -Verb RunAs -Wait -PassThru
 if ($process.ExitCode -ne 0) {{
     exit $process.ExitCode

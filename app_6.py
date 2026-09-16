@@ -66,12 +66,12 @@ except ImportError:
 
 try:
     from rapidocr_onnxruntime import RapidOCR
-except ImportError:
+except (ImportError, ModuleNotFoundError):
     RapidOCR = None
 
 try:
     import onnxruntime as ort
-except ImportError:
+except (ImportError, ModuleNotFoundError):
     ort = None
 
 _ocr_engine = None
@@ -82,7 +82,7 @@ OCR_MAX_PAGES = None
 # 1.2x conserva una resolución suficiente para formularios escaneados y
 # reduce el costo del OCR frente al renderizado anterior de 1.5x.
 OCR_RENDER_SCALE = 1.2
-OCR_CACHE_VERSION = "2"
+OCR_CACHE_VERSION = "3"
 _ocr_persistent_cache = None
 
 
@@ -120,7 +120,13 @@ def estado_ocr_local():
 def crear_motor_ocr():
     if RapidOCR is None:
         return None
-    return RapidOCR(**configuracion_ocr_local())
+    configuracion = configuracion_ocr_local()
+    try:
+        return RapidOCR(**configuracion)
+    except (TypeError, RuntimeError, ValueError):
+        if configuracion.get("use_dml") or configuracion.get("use_cuda"):
+            return RapidOCR(use_cuda=False, use_dml=False)
+        raise
 
 try:
     from updater import obtener_actualizacion_disponible, download_and_apply_update
@@ -1108,21 +1114,15 @@ def preparar_carga_drive(
     if not service:
         return [], None, "Google Drive no está autenticado."
     try:
-        if fecha:
-            carpeta_expediente = carpeta_drive_para_expediente(
-                service,
-                str(fecha),
-                radicado or "RADICADO_PENDIENTE",
-                placa or "PLACA_PENDIENTE",
-                f"Carga-{carga_id}",
-            )
-        else:
-            pendientes = carpeta_drive_para_pendientes(service)
-            carpeta_expediente = buscar_o_crear_carpeta_drive(
-                service,
-                pendientes,
-                f"Carga-{radicado or carga_id}",
-            )
+        # La fecha detectada por OCR no es definitiva. Mantener el staging en
+        # Pendientes evita crear expedientes en un año equivocado antes de que
+        # el usuario confirme el formulario.
+        pendientes = carpeta_drive_para_pendientes(service)
+        carpeta_expediente = buscar_o_crear_carpeta_drive(
+            service,
+            pendientes,
+            f"Carga-{radicado or carga_id}",
+        )
         if not carpeta_expediente:
             return [], None, "No fue posible crear la carpeta de carga en Drive."
 
@@ -1269,7 +1269,7 @@ def obtener_texto_ocr_pagina(contenido, pagina, objeto_pagina, escala=OCR_RENDER
     cache = _cargar_cache_ocr()
     clave = _clave_cache_ocr(contenido, pagina, escala)
     texto_guardado = cache.get(clave)
-    if isinstance(texto_guardado, str):
+    if isinstance(texto_guardado, str) and texto_guardado.strip():
         return texto_guardado
     global _ocr_engine
     if _ocr_engine is None:
@@ -1430,6 +1430,8 @@ def normalizar_errores_ocr(texto):
     """Corrige errores frecuentes del OCR antes de aplicar reglas documentales."""
     texto = normalizar_texto_documento(texto)
     reemplazos = (
+        (r"\bempr[_\s]*a\b", "empresa"),
+        (r"\bveh[ií]cul[o0]\b", "vehículo"),
         (r"resoluci[oó6]n", "resolución"),
         (r"notificaci[oó6]n", "notificación"),
         (r"ejecutori[aá6]|ejecutor[ií]a", "ejecutoria"),
@@ -1494,11 +1496,11 @@ def extraer_datos_pdf(contenido, texto=None):
             r"fecha\s+(?:de\s+)?recurso\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
         ],
         "fecha_resolucion": [
-            r"fecha\s+(?:de\s+)?resoluci[oó]n\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+            r"(?:fecha\s+(?:de\s+)?resoluci[oó]n|resoluci[oó]n[^.]{0,80}?\b(?:del|de fecha))\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
             r"fecha\s+(?:de\s+)?resoluci[oó]n\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
         ],
         "fecha_notificacion": [
-            r"fecha\s+(?:de\s+)?notificaci[oó]n\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+            r"(?:fecha\s+(?:de\s+)?notificaci[oó]n|notificaci[oó]n[^.]{0,80}?\b(?:del|de fecha))\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
             r"fecha\s+(?:de\s+)?notificaci[oó]n\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
         ],
         "fecha_ejecutoria": [
@@ -1516,6 +1518,7 @@ def extraer_datos_pdf(contenido, texto=None):
         ],
         "empresa": [
             r"\bempresa\s*[:#\-]?\s*([^|]{3,100}?)(?=\s+(?:NIT|propietario|placa|radicado|resoluci[oó]n|correo)\b|$)",
+            r"\bempresa\s+de\s+transportes?\s+([^|]{3,100}?)(?=\s+(?:NIT|contrato|resoluci[oó]n|placa)\b|$)",
         ],
         "propietario": [
             r"\bpropietario(?:\s+del\s+veh[ií]culo)?\s*[:#\-]?\s*([^|]{3,100}?)(?=\s+(?:c[eé]dula|CC|placa|direcci[oó]n|resoluci[oó]n|correo|NIT)\b|$)",
@@ -1626,6 +1629,20 @@ def extraer_datos_pdf(contenido, texto=None):
             fecha_contexto = fecha_en_contexto(etiquetas)
             if fecha_contexto:
                 datos[campo] = fecha_contexto
+    if not datos.get("fecha_solicitud"):
+        fecha_solicitud = re.search(
+            r"\b(\d{1,2}[/-]\d{1,2}[/-]20\d{2}|20\d{2}[/-]\d{1,2}[/-]\d{1,2})\b",
+            texto,
+        )
+        if fecha_solicitud:
+            valor = fecha_solicitud.group(1)
+            partes = re.split(r"[/-]", valor)
+            if len(partes) == 3:
+                if len(partes[0]) == 4:
+                    datos["fecha_solicitud"] = "-".join(partes)
+                else:
+                    dia, mes, anio = partes
+                    datos["fecha_solicitud"] = f"{anio}-{mes.zfill(2)}-{dia.zfill(2)}"
     return datos
 
 
@@ -1819,11 +1836,11 @@ def tipos_documentales_detectados(texto, tipo_fallback):
     evidencia = normalizar_errores_ocr(texto).lower()
     reglas = [
         ("Desistimiento", r"desistim|desiste"),
-        ("Recurso", r"\brecurso\b|reposici[oó]n|apelaci[oó]n"),
-        ("Resolución", r"\bresoluci[oó]n\b|acto\s+administrativo"),
-        ("Notificación", r"notificaci[oó]n|citado|aviso|publicaci[oó]n"),
-        ("Constancia de ejecutoria", r"ejecutoria|firmeza"),
-        ("Solicitud", r"derecho de petici[oó]n|solicito|solicitud"),
+        ("Recurso", r"\brecurso\b|reposici[oó]n|apelaci[oó]n|impugn"),
+        ("Resolución", r"\bresoluci[oó]n\b|acto\s+administrativo|resuelve"),
+        ("Notificación", r"notificaci[oó]n|c[ií]taci[oó]n|citado|aviso|publicaci[oó]n"),
+        ("Constancia de ejecutoria", r"ejecutoria|firmeza|constancia.*firme"),
+        ("Solicitud", r"derecho de petici[oó]n|solicito|solicitud|petici[oó]n"),
     ]
     detectados = {
         tipo for tipo, patron in reglas
@@ -3460,8 +3477,8 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     tipos_documentales_detectados(texto_archivo, tipo_documento)
                 )
             barra_analisis.progress(
-                1.0,
-                text="Análisis terminado. Información lista para confirmar.",
+                0.75,
+                text="OCR terminado. Clasificando y organizando el expediente...",
             )
             estado_analisis.success(
                 "Lectura de los archivos terminada. Revisa los datos detectados "
@@ -3509,6 +3526,10 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     "Drive no está autenticado: la carga se conserva localmente y "
                     "no se puede crear la estructura documental remota."
                 )
+            barra_analisis.progress(
+                0.9,
+                text="Clasificación y carga preliminar terminadas. Revisa el formulario.",
+            )
             if len(tipos_carga) == 1:
                 st.info(f"Desenlace detectado: {next(iter(tipos_carga))}")
             elif len(tipos_carga) > 1:
