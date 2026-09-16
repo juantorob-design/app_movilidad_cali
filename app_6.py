@@ -1395,32 +1395,20 @@ def descargar_archivo_drive(service, file_id):
 
 
 def _extraer_texto_pdf(contenido, progreso=None):
-    """Devuelve texto digital y usa OCR local como respaldo para PDFs escaneados."""
+    """Lee texto digital y OCR de cada página para consolidar todos los campos."""
     global _ocr_cache_writes_pending
     if PdfReader is None:
         return ""
     try:
         reader = PdfReader(io.BytesIO(contenido))
-        texto = " ".join(
+        textos_digitales = [
             (pagina.extract_text() or "").replace("\xa0", " ")
             for pagina in reader.pages
-        )
+        ]
+        texto = " ".join(textos_digitales)
         texto = normalizar_texto_documento(texto)
-        texto_util = bool(
-            re.search(
-                r"\b(?:radicado|radicaci[oó]n|placa|matr[ií]cula|solicitud|"
-                r"petici[oó]n|resoluci[oó]n|notificaci[oó]n|recurso|"
-                r"desistim|desiste)\b",
-                texto,
-                flags=re.IGNORECASE,
-            )
-        )
-        datos_basicos = extraer_datos_pdf(contenido, texto=texto) if texto else {}
-        if texto and texto_util and len(datos_basicos) >= 4:
-            if progreso:
-                progreso(1, 1)
-            return texto
     except Exception:
+        textos_digitales = []
         texto = ""
     if fitz is None or RapidOCR is None:
         return texto
@@ -1429,23 +1417,29 @@ def _extraer_texto_pdf(contenido, progreso=None):
         if _ocr_engine is None:
             _ocr_engine = crear_motor_ocr()
         documento = fitz.open(stream=contenido, filetype="pdf")
-        paginas = [texto] if texto else []
+        paginas = []
         total_paginas = len(documento)
         for indice, pagina in enumerate(documento):
             if OCR_MAX_PAGES is not None and indice >= OCR_MAX_PAGES:
                 break
+            texto_digital = (
+                textos_digitales[indice]
+                if indice < len(textos_digitales)
+                else ""
+            )
             pixmap_vista = pagina.get_pixmap(
                 matrix=fitz.Matrix(0.35, 0.35),
                 alpha=False,
             )
-            if pagina_pixeles_blancos(pixmap_vista):
-                if progreso:
-                    progreso(indice + 1, total_paginas)
-                continue
-            texto_pagina = obtener_texto_ocr_pagina(
-                contenido,
-                indice,
-                pagina,
+            texto_ocr = ""
+            if not pagina_pixeles_blancos(pixmap_vista):
+                texto_ocr = obtener_texto_ocr_pagina(
+                    contenido,
+                    indice,
+                    pagina,
+                )
+            texto_pagina = " ".join(
+                parte for parte in (texto_digital, texto_ocr) if parte
             )
             if texto_pagina:
                 paginas.append(texto_pagina)
@@ -1478,8 +1472,16 @@ def normalizar_texto_documento(texto):
 def normalizar_errores_ocr(texto):
     """Corrige errores frecuentes del OCR antes de aplicar reglas documentales."""
     texto = normalizar_texto_documento(texto)
+    # Algunos motores devuelven el carácter de reemplazo en lugar de una vocal acentuada.
+    texto = texto.replace("\ufffd", "o").replace("?", "o")
     reemplazos = (
         (r"\bempr[_\s]*a\b", "empresa"),
+        (r"notificaci.n", "notificación"),
+        (r"resoluci.n", "resolución"),
+        (r"radicaci.n", "radicación"),
+        (r"matr.cula", "matrícula"),
+        (r"c.dula", "cédula"),
+        (r"direcci.n", "dirección"),
         (r"\bveh[ií]cul[o0]\b", "vehículo"),
         (r"resoluci[oó6]n", "resolución"),
         (r"notificaci[oó6]n", "notificación"),
@@ -1506,11 +1508,27 @@ def fecha_para_formulario(valor):
 
 
 def combinar_datos_detectados(destino, nuevos):
-    """Conserva el primer valor útil y evita que un anexo borre otro dato."""
+    """Consolida valores encontrados en todas las páginas sin perder evidencia."""
     for campo, valor in (nuevos or {}).items():
-        if valor and not destino.get(campo):
+        if not valor:
+            continue
+        actual = destino.get(campo)
+        if not actual:
+            destino[campo] = valor
+            continue
+        if campo in {"radicado_padre", "nit", "cedula", "placa"}:
+            actual_limpio = re.sub(r"\D", "", str(actual))
+            nuevo_limpio = re.sub(r"\D", "", str(valor))
+            if len(nuevo_limpio) > len(actual_limpio):
+                destino[campo] = valor
+        elif len(str(valor)) > len(str(actual)):
             destino[campo] = valor
     return destino
+
+
+def normalizar_identificador(valor):
+    """Normaliza identificadores OCR y Sheets para comparar formatos distintos."""
+    return re.sub(r"[^A-Z0-9]", "", str(valor or "").upper())
 
 
 def combinar_datos_por_coincidencia(destino, fuente):
@@ -1532,7 +1550,7 @@ def combinar_datos_por_coincidencia(destino, fuente):
 def buscar_expediente_local_por_coincidencias(expedientes, datos):
     """Busca un expediente local usando varios identificadores confiables."""
     buscados = {
-        campo: str(datos.get(campo, "")).strip().upper()
+        campo: normalizar_identificador(datos.get(campo, ""))
         for campo in ("radicado_padre", "placa", "empresa", "nit", "cedula")
     }
     mejor = None
@@ -1540,12 +1558,12 @@ def buscar_expediente_local_por_coincidencias(expedientes, datos):
     for expediente in (expedientes or {}).values():
         puntaje = 0
         for campo, valor in buscados.items():
-            existente = str(expediente.get(campo, "")).strip().upper()
+            existente = normalizar_identificador(expediente.get(campo, ""))
             if valor and existente and valor == existente:
                 puntaje += 4 if campo == "radicado_padre" else 2
         if puntaje > mejor_puntaje:
             mejor, mejor_puntaje = expediente, puntaje
-    return mejor if mejor_puntaje >= 4 else None
+    return mejor if mejor_puntaje >= 2 else None
 
 
 def buscar_expedientes_local_consulta(expedientes, campo, criterio):
@@ -1669,7 +1687,7 @@ def extraer_datos_pdf(contenido, texto=None):
             r"\b([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})\b",
         ],
         "nit": [
-            r"\b(?:NIT|n\.i\.t\.)\s*[:#\-]?\s*([0-9]{6,12}(?:\s*[\-–]\s*[0-9])?)\b",
+            r"\b(?:NIT|NIT\.?|n\.i\.t\.?)\s*[:#.\-]?\s*([0-9][0-9.\s]{5,14}(?:\s*[\-–]\s*[0-9])?)\b",
         ],
         "cedula": [
             r"\b(?:c[eé]dula|c\.c\.|identificaci[oó]n)\s*[:#\-]?\s*([0-9][0-9.\s]{5,14})\b",
@@ -1677,6 +1695,7 @@ def extraer_datos_pdf(contenido, texto=None):
         "empresa": [
             r"\bempresa\s*[:#\-]?\s*([^|]{3,100}?)(?=\s+(?:NIT|propietario|placa|radicado|resoluci[oó]n|correo)\b|$)",
             r"\bempresa\s+de\s+transportes?\s+([^|]{3,100}?)(?=\s+(?:NIT|contrato|resoluci[oó]n|placa)\b|$)",
+            r"\b(EMPRESA\s+DE\s+TRANSPORTES?\s+[A-Z0-9ÁÉÍÓÚÑ .,&-]{4,100}?)(?=\s+(?:NIT|RESOLUCI|CONTRATO|PLACA)\b|$)",
         ],
         "propietario": [
             r"\bpropietario(?:\s+del\s+veh[ií]culo)?\s*[:#\-]?\s*([^|]{3,100}?)(?=\s+(?:c[eé]dula|CC|placa|direcci[oó]n|resoluci[oó]n|correo|NIT)\b|$)",
@@ -1741,6 +1760,10 @@ def extraer_datos_pdf(contenido, texto=None):
                                 if len(anio) == 2:
                                     anio = "20" + anio
                                 valor = f"{anio}-{mes.zfill(2)}-{dia.zfill(2)}"
+                elif campo == "nit":
+                    valor = re.sub(r"\D", "", valor)
+                elif campo == "cedula":
+                    valor = re.sub(r"\D", "", valor)
                 elif campo in {
                     "correo", "nit", "cedula", "empresa", "propietario",
                     "direccion_empresa", "direccion_propietario", "nueva_empresa",
@@ -1749,6 +1772,41 @@ def extraer_datos_pdf(contenido, texto=None):
                     valor = re.sub(r"\s+", " ", valor).strip()
                 datos[campo] = valor
                 break
+    if not datos.get("fecha_radicacion"):
+        coincidencia_fecha_radicacion = re.search(
+            r"radicaci[oó?]n[^0-9]{0,30}"
+            r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+            texto,
+            flags=re.IGNORECASE,
+        )
+        if coincidencia_fecha_radicacion:
+            dia_mes_anio = coincidencia_fecha_radicacion.group(1).split("/")
+            if len(dia_mes_anio) == 1:
+                dia_mes_anio = coincidencia_fecha_radicacion.group(1).split("-")
+            if len(dia_mes_anio) == 3:
+                if len(dia_mes_anio[0]) == 4:
+                    datos["fecha_radicacion"] = "-".join(dia_mes_anio)
+                else:
+                    dia, mes, anio = dia_mes_anio
+                    datos["fecha_radicacion"] = (
+                        f"{'20' + anio if len(anio) == 2 else anio}-"
+                        f"{mes.zfill(2)}-{dia.zfill(2)}"
+                    )
+    coincidencia_empresa = re.search(
+        r"\bEMPRESA\s+DE\s+TRANSPORTES?\s+"
+        r"[A-Z0-9ÁÉÍÓÚÑ .,&-]{4,100}",
+        texto,
+        flags=re.IGNORECASE,
+    )
+    if coincidencia_empresa:
+        empresa_detectada = re.split(
+            r"\s+(?:NIT|RESOLUCI|CONTRATO|PLACA)\b",
+            coincidencia_empresa.group(0),
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip(" .,:;-")
+        if len(empresa_detectada) >= len(str(datos.get("empresa", ""))):
+            datos["empresa"] = empresa_detectada
     radicado_extraido = str(datos.get("radicado_padre", "")).strip()
     if radicado_extraido and not re.fullmatch(r"20\d{16}", radicado_extraido):
         datos["radicado_revision"] = (
@@ -1869,23 +1927,14 @@ def separar_pdf_completo(contenido, tipo_fallback):
                 )
             if len(texto) < 8 and pagina_pixeles_blancos(pixmap):
                 continue
-            requiere_ocr = not texto
-            if requiere_ocr:
-                texto = obtener_texto_ocr_pagina(
+            texto_ocr = ""
+            if documento_visual and not pagina_pixeles_blancos(pixmap):
+                texto_ocr = obtener_texto_ocr_pagina(
                     contenido,
                     numero_pagina,
                     documento_visual.load_page(numero_pagina),
                 )
-            elif not tiene_texto_digital:
-                texto = f"{texto} {obtener_texto_ocr_pagina(contenido, numero_pagina, documento_visual.load_page(numero_pagina))}".strip()
-            elif not re.search(
-                r"resoluci[oó]n|resolucion|notificaci[oó]n|notificacion|"
-                r"recurso|desistim|solicitud|petici[oó]n|peticion|"
-                r"citaci[oó]n|citacion",
-                texto,
-                flags=re.IGNORECASE,
-            ):
-                texto = f"{texto} {obtener_texto_ocr_pagina(contenido, numero_pagina, documento_visual.load_page(numero_pagina))}".strip()
+            texto = " ".join(parte for parte in (texto, texto_ocr) if parte)
             textos_paginas[numero_pagina] = texto
             tipo_detectado = clasificar_tipo_documento(texto, "")
             # Las páginas de continuación suelen tener poco texto o solo
@@ -2326,12 +2375,12 @@ def buscar_registro_en_sheets(
             "cedula": next((i for i, valor in enumerate(encabezados) if valor == "CEDULA"), None),
         }
         buscados = {
-            "radicado": str(radicado or "").strip().upper(),
-            "placa": str(placa or "").strip().upper(),
-            "fecha": str(fecha or "").strip(),
-            "empresa": str(empresa or "").strip().upper(),
-            "nit": str(nit or "").strip().upper(),
-            "cedula": str(cedula or "").strip().upper(),
+            "radicado": normalizar_identificador(radicado),
+            "placa": normalizar_identificador(placa),
+            "fecha": normalizar_identificador(fecha),
+            "empresa": normalizar_identificador(empresa),
+            "nit": normalizar_identificador(nit),
+            "cedula": normalizar_identificador(cedula),
         }
         indices.update({
             "radicado": indice_rad,
@@ -2346,7 +2395,7 @@ def buscar_registro_en_sheets(
                 buscado = buscados[campo]
                 if not buscado or indice is None or len(fila) <= indice:
                     continue
-                valor = str(fila[indice]).strip().upper()
+                valor = normalizar_identificador(fila[indice])
                 if valor and valor == buscado:
                     puntaje += 4 if campo == "radicado" else 2
             if puntaje > mejor_puntaje:
@@ -2357,7 +2406,7 @@ def buscar_registro_en_sheets(
                     "encabezados": encabezados,
                     "puntaje": puntaje,
                 }
-        if mejor_coincidencia and mejor_puntaje >= 4:
+        if mejor_coincidencia and mejor_puntaje >= 2:
             return mejor_coincidencia
     except Exception as error:
         st.warning(f"No fue posible consultar el registro actual de Google Sheets: {error}")
@@ -4017,7 +4066,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     "Campos encontrados en Sheets: "
                     + ", ".join(datos_sheet.keys())
                 )
-            datos_carga = {**datos_carga, **datos_sheet}
+            combinar_datos_por_coincidencia(datos_carga, datos_sheet)
             if datos_carga.get("fecha_solicitud"):
                 try:
                     fecha_carga = datetime.date.fromisoformat(
@@ -4294,6 +4343,23 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         "usará al nombrar la carpeta definitiva de Drive."
                     ),
                 ).strip()
+            campos_revision = [
+                etiqueta
+                for etiqueta, campo in (
+                    ("Empresa", "empresa"),
+                    ("NIT", "nit"),
+                    ("Propietario", "propietario"),
+                    ("Cédula", "cedula"),
+                    ("Fecha de radicación", "fecha_radicacion"),
+                )
+                if not datos_carga.get(campo)
+            ]
+            if campos_revision:
+                st.warning(
+                    "No se pudieron confirmar automáticamente: "
+                    + ", ".join(campos_revision)
+                    + ". Verifica otros documentos y completa estos campos manualmente."
+                )
 
             btn_guardar = st.form_submit_button("Guardar y Sincronizar Datos", width="stretch")
 
@@ -4831,11 +4897,10 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         )
                         st.stop()
                 existente_final = st.session_state.db_expedientes.get(radicado_registro)
-                fuente_existente = {
-                    **(existente_final or {}),
-                    **datos_detectados,
-                    **datos_sheet,
-                }
+                fuente_existente = dict(existente_final or {})
+                combinar_datos_por_coincidencia(fuente_existente, datos_detectados)
+                combinar_datos_por_coincidencia(fuente_existente, datos_carga)
+                combinar_datos_por_coincidencia(fuente_existente, datos_sheet)
 
                 def valor_actual(campo, valor_nuevo=""):
                     return valor_nuevo or fuente_existente.get(campo, "")
