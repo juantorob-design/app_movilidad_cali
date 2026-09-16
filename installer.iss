@@ -21,6 +21,12 @@ SetupIconFile=Icono.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 CloseApplications=yes
 RestartApplications=no
+; La aplicación guarda sus datos en %LOCALAPPDATA%, fuera de {app}.
+; El actualizador desinstala la versión anterior antes de iniciar esta instalación.
+Uninstallable=yes
+
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\*"
 
 [Files]
 Source: "dist\SistemaDesvinculaciones\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

@@ -4,6 +4,7 @@ import requests
 import subprocess
 import threading
 import tempfile
+import time
 from urllib.parse import urlparse
 
 # Versión actual de la aplicación instalada
@@ -48,7 +49,12 @@ def obtener_actualizacion_disponible():
     if not VERSION_CHECK_URL:
         return None
     try:
-        response = requests.get(VERSION_CHECK_URL, timeout=5)
+        response = requests.get(
+            VERSION_CHECK_URL,
+            params={"_": str(int(time.time()))},
+            headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+            timeout=10,
+        )
         response.raise_for_status()
         data = response.json()
         remote_version = data.get("version")
@@ -118,8 +124,8 @@ def download_and_apply_update(download_url):
     if not download_url:
         return
 
-    if not getattr(sys, 'frozen', False):
-        return
+    if not getattr(sys, "frozen", False):
+        raise RuntimeError("La actualización automática solo está disponible en el instalador de Windows.")
     parsed_url = urlparse(download_url)
     if (
         parsed_url.scheme != "https"
@@ -149,14 +155,29 @@ def download_and_apply_update(download_url):
         if tamano_descargado == 0:
             raise OSError("El instalador descargado está vacío.")
 
+        desinstalador = os.path.join(
+            os.path.dirname(ejecutable),
+            "unins000.exe",
+        )
         script_content = f"""$ErrorActionPreference = 'Stop'
 $installer = {_literal_powershell(instalador)}
 $application = {_literal_powershell(ejecutable)}
+$uninstaller = {_literal_powershell(desinstalador)}
 Start-Sleep -Seconds 2
-$arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS', '/RESTARTAPPLICATIONS')
-$process = Start-Process -FilePath $installer -ArgumentList $arguments -Verb RunAs -Wait -PassThru
+$uninstallArguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
+if (Test-Path -LiteralPath $uninstaller) {{
+    $uninstallProcess = Start-Process -FilePath $uninstaller -ArgumentList $uninstallArguments -Verb RunAs -Wait -PassThru
+    if ($uninstallProcess.ExitCode -ne 0) {{
+        exit $uninstallProcess.ExitCode
+    }}
+}}
+$installArguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS', '/RESTARTAPPLICATIONS')
+$process = Start-Process -FilePath $installer -ArgumentList $installArguments -Verb RunAs -Wait -PassThru
 if ($process.ExitCode -ne 0) {{
     exit $process.ExitCode
+}}
+if (-not (Test-Path -LiteralPath $application)) {{
+    exit 1
 }}
 Start-Process -FilePath $application -WorkingDirectory (Split-Path -Parent $application)
 Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
