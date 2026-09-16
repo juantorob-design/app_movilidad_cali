@@ -186,14 +186,19 @@ Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
         with open(script_actualizacion, "w", encoding="utf-8") as f:
             f.write(script_content)
 
+        comando_elevado = (
+            "Start-Process -FilePath 'powershell.exe' -Verb RunAs "
+            "-ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',"
+            f"{_literal_powershell(script_actualizacion)})"
+        )
         subprocess.Popen(
             [
                 "powershell.exe",
                 "-NoProfile",
                 "-ExecutionPolicy",
                 "Bypass",
-                "-File",
-                script_actualizacion,
+                "-Command",
+                comando_elevado,
             ],
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
             | subprocess.DETACHED_PROCESS
