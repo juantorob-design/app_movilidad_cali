@@ -1454,6 +1454,25 @@ def _extraer_texto_pdf(contenido, progreso=None):
         return texto
 
 
+def extraer_texto_por_partes_pdf(contenido, tipo_fallback="Solicitud"):
+    """Procesa primero por fragments del expediente para no OCRar el PDF completo."""
+    try:
+        if not contenido:
+            return ""
+        partes = separar_pdf_completo(contenido, tipo_fallback)
+        if not partes or len(partes) == 1 and partes[0].get("contenido") == contenido:
+            return _extraer_texto_pdf(contenido)
+        textos = []
+        for parte in partes:
+            subtexto = parte.get("texto") or _extraer_texto_pdf(parte.get("contenido") or contenido)
+            texto_limpio = normalizar_texto_documento(subtexto)
+            if texto_limpio:
+                textos.append(texto_limpio)
+        return normalizar_texto_documento(" ".join(textos))
+    except Exception:
+        return _extraer_texto_pdf(contenido)
+
+
 @lru_cache(maxsize=8)
 def extraer_texto_pdf(contenido):
     """Devuelve texto cacheado para lecturas repetidas del mismo documento."""
@@ -3806,29 +3825,82 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         )
                     except ValueError:
                         contenido_analizable = b""
-                texto_archivo = normalizar_texto_documento(
-                    extraer_texto_pdf_con_progreso(
-                        contenido_analizable,
-                        lambda pagina, total, indice=indice_archivo: barra_analisis.progress(
-                            min(
-                                (indice - 1 + (pagina / max(total, 1)))
-                                / total_archivos,
-                                1.0,
+                if archivo.name.lower().endswith(".pdf"):
+                    partes_analisis = separar_pdf_completo(contenido_analizable, tipo_documento)
+                    if partes_analisis and len(partes_analisis) > 1:
+                        textos_partes = []
+                        for parte in partes_analisis:
+                            subtexto = normalizar_texto_documento(
+                                parte.get("texto")
+                                or extraer_texto_pdf_con_progreso(
+                                    parte.get("contenido") or contenido_analizable,
+                                    lambda pagina, total, indice=indice_archivo, nombre=archivo.name: barra_analisis.progress(
+                                        min(
+                                            (indice - 1 + (pagina / max(total, 1)))
+                                            / total_archivos,
+                                            1.0,
+                                        ),
+                                        text=(
+                                            f"Analizando {nombre}: página {pagina} de {total}"
+                                        ),
+                                    ),
+                                )
+                            )
+                            if subtexto:
+                                textos_partes.append(subtexto)
+                        texto_archivo = normalizar_texto_documento(" ".join(textos_partes))
+                    else:
+                        texto_archivo = normalizar_texto_documento(
+                            extraer_texto_pdf_con_progreso(
+                                contenido_analizable,
+                                lambda pagina, total, indice=indice_archivo: barra_analisis.progress(
+                                    min(
+                                        (indice - 1 + (pagina / max(total, 1)))
+                                        / total_archivos,
+                                        1.0,
+                                    ),
+                                    text=(
+                                        f"Analizando archivo {indice} de {total_archivos}: "
+                                        f"página {pagina} de {total}"
+                                    ),
+                                ),
+                            )
+                        )
+                else:
+                    texto_archivo = normalizar_texto_documento(
+                        extraer_texto_pdf_con_progreso(
+                            contenido_analizable,
+                            lambda pagina, total, indice=indice_archivo: barra_analisis.progress(
+                                min(
+                                    (indice - 1 + (pagina / max(total, 1)))
+                                    / total_archivos,
+                                    1.0,
+                                ),
+                                text=(
+                                    f"Analizando archivo {indice} de {total_archivos}: "
+                                    f"página {pagina} de {total}"
+                                ),
                             ),
-                            text=(
-                                f"Analizando archivo {indice} de {total_archivos}: "
-                                f"página {pagina} de {total}"
-                            ),
-                        ),
+                        )
                     )
-                )
                 textos_analizados[huella_contenido(contenido_analizable)] = texto_archivo
+                datos_archivo = extraer_datos_pdf(
+                    contenido_analizable,
+                    texto=texto_archivo,
+                )
+                if archivo.name.lower().endswith(".pdf"):
+                    for parte in (separar_pdf_completo(contenido_analizable, tipo_documento) or []):
+                        if parte.get("texto") or parte.get("contenido"):
+                            combinar_datos_detectados(
+                                datos_archivo,
+                                extraer_datos_pdf(
+                                    parte.get("contenido") or contenido_analizable,
+                                    texto=parte.get("texto") or texto_archivo,
+                                ),
+                            )
                 combinar_datos_detectados(
                     datos_carga,
-                    extraer_datos_pdf(
-                        contenido_analizable,
-                        texto=texto_archivo,
-                    ),
+                    datos_archivo,
                 )
                 coincidencia_radicado = re.search(
                     r"(?<!\d)(\d{15,22})(?!\d)",
