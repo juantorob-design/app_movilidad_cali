@@ -15,6 +15,11 @@
 5. La información detectada debe precargar el registro antes de guardar. Si un
    complemento aporta un dato que faltaba, debe completar el registro sin borrar
    los datos ya confirmados.
+6. La separación debe clasificar cada página por evidencia priorizada. Los
+   títulos de solicitud, resolución, notificación, recurso, desistimiento y
+   ejecutoria tienen prioridad sobre menciones secundarias. Las páginas de
+   continuación heredan el complemento anterior cuando no contienen texto
+   suficiente, evitando enviarlas innecesariamente a `Otro`.
 
 ## Datos mínimos del registro
 

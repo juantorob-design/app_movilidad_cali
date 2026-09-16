@@ -1720,7 +1720,11 @@ def separar_pdf_completo(contenido, tipo_fallback):
                 flags=re.IGNORECASE,
             ):
                 texto = f"{texto} {obtener_texto_ocr_pagina(contenido, numero_pagina, documento_visual.load_page(numero_pagina))}".strip()
-            tipo = clasificar_tipo_documento(texto, tipo_fallback)
+            tipo_detectado = clasificar_tipo_documento(texto, "")
+            # Las páginas de continuación suelen tener poco texto o solo
+            # datos administrativos; se conservan dentro del complemento
+            # anterior en vez de crear una carpeta "Otro".
+            tipo = tipo_detectado or (actual["tipo"] if actual else tipo_fallback)
             if actual and actual["tipo"] == tipo:
                 actual["paginas"].append(pagina)
             else:
@@ -1806,29 +1810,47 @@ def extraer_texto_ocr_pixmap(pixmap):
 
 def clasificar_tipo_documento(texto, tipo_fallback):
     evidencia = normalizar_errores_ocr(texto).lower()
-    if re.search(
-        r"\bsin\s+recurso\b|no\s+interpuso|no\s+present[oó]|"
-        r"sin\s+interponer",
-        evidencia,
-    ):
-        if re.search(r"resoluci[oó]n|acto\s+administrativo", evidencia):
-            return "Resolución"
-    reglas = [
-        (
-            "Desistimiento",
-            r"desistim|desiste|declara(?:r)?\s+(?:el\s+)?desistimiento|"
-            r"desistimiento\s+de\s+una\s+solicitud",
-        ),
-        ("Resolución", r"\bresoluci[oó]n\b"),
-        ("Recurso", r"\brecurso\b|reposici[oó]n|apelaci[oó]n"),
-        ("Notificación", r"notificaci[oó]n|citado|aviso"),
-        ("Constancia de ejecutoria", r"ejecutoria|firmeza"),
-        ("Solicitud", r"derecho de petici[oó]n|solicito|solicitud"),
-    ]
-    for tipo, patron in reglas:
-        if re.search(patron, evidencia):
-            return tipo
-    return tipo_fallback
+    puntuaciones = {
+        "Desistimiento": [
+            (9, r"\bdesistimiento\b|declara(?:r)?\s+el\s+desistimiento"),
+            (3, r"\bdesistim\w*"),
+        ],
+        "Resolución": [
+            (10, r"\bresoluci[oó]n\s*(?:no|n[°ºo])?\s*[:#\-.]?\s*\w+"),
+            (9, r"\bpor\s+la\s+cual\b.*\bdesvincul"),
+            (3, r"\bresoluci[oó]n\b|acto\s+administrativo|resuelve"),
+        ],
+        "Notificación": [
+            (15, r"citaci[oó]n\s+para\s+notificaci[oó]n|notificarse\s+personalmente"),
+            (12, r"\bnotificaci[oó]n\s+(?:personal|por\s+aviso|electr[oó]nica)"),
+            (3, r"\bnotificaci[oó]n\b|\bcitado\b|\baviso\b"),
+        ],
+        "Constancia de ejecutoria": [
+            (10, r"constancia\s+de\s+ejecutoria"),
+            (7, r"\bejecutoria\b|\bfirmeza\b"),
+        ],
+        "Recurso": [
+            (10, r"recurso\s+de\s+(?:reposici[oó]n|apelaci[oó]n)"),
+            (8, r"interpuso\s+(?:un\s+)?recurso|present[oó]\s+(?:un\s+)?recurso"),
+            (3, r"\brecurso\b|impugn"),
+        ],
+        "Solicitud": [
+            (10, r"derecho\s+de\s+petici[oó]n|solicitud\s+de\s+desvinculaci[oó]n"),
+            (8, r"\bsolicito\b.*\bdesvincul"),
+            (3, r"\bsolicitud\b|\bpetici[oó]n\b"),
+        ],
+    }
+    mejor_tipo = None
+    mejor_puntaje = 0
+    for tipo, reglas in puntuaciones.items():
+        puntaje = sum(
+            puntos for puntos, patron in reglas
+            if re.search(patron, evidencia, flags=re.IGNORECASE | re.DOTALL)
+        )
+        if puntaje > mejor_puntaje:
+            mejor_tipo = tipo
+            mejor_puntaje = puntaje
+    return mejor_tipo or tipo_fallback
 
 
 def tipos_documentales_detectados(texto, tipo_fallback):
@@ -4600,10 +4622,20 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 st.session_state.db_expedientes[radicado_registro] = registro_datos
                 guardar_local_json(st.session_state.db_expedientes)
 
+                if "barra_guardado" in locals():
+                    barra_guardado.progress(
+                        0.97,
+                        text="Registro local y expediente documental guardados. Sincronizando Sheets...",
+                    )
                 sheets_ok = False
                 if sheets_service:
                     sheets_ok = guardar_registro_en_sheets(sheets_service, registro_datos)
 
+                if "barra_guardado" in locals():
+                    barra_guardado.progress(
+                        1.0,
+                        text="Proceso terminado: Local, Drive y Sheets actualizados.",
+                    )
                 if sheets_ok:
                     st.success(f"Proceso guardado en Local, Drive y Google Sheets. Ubicación: **{cod_ub}**")
                 else:
