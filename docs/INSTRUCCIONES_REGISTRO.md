@@ -34,9 +34,19 @@
 - Funcionario que desvincula.
 - Remisión a Registro Automotor y fecha de remisión.
 - Observaciones y notas.
+- Foliación total del expediente en hojas.
+
+La foliación se propone automáticamente contando las páginas del PDF, pero el
+valor del campo editable en el formulario tiene prioridad y es el que se
+guarda en el registro local, Drive y Google Sheets.
 
 El usuario que registra o modifica el expediente no se debe colocar
 automáticamente como funcionario que desvincula.
+
+Cada registro debe conservar también la trazabilidad de quien cargó los PDF:
+nombre completo, correo de la cuenta activa y cargo o rol autorizado. Estos
+datos se guardan en las columnas `SUBIDO POR`, `CORREO SUBIDA` y `CARGO
+SUBIDA`, separadas del campo `FUNCIONARIO QUE DESVINCULA`.
 
 ## Organización en Google Drive
 
@@ -76,6 +86,21 @@ existir un PDF completo en la raíz del expediente. Al agregar complementos:
    NVIDIA, DirectML para GPU compatible con Windows o CPU local como respaldo.
    El uso normal de la GPU no requiere permisos administrativos; sí requiere
    que Windows tenga un controlador gráfico funcional.
+9. Al terminar el análisis de una carga, las partes detectadas se suben
+   inmediatamente a la carpeta del expediente en Drive. Si todavía no se conoce
+   la fecha de la petición, se conservan en una carpeta identificada dentro de
+   `Pendientes`.
+10. El guardado reutiliza las partes ya subidas, mueve la carpeta pendiente al
+    año correcto cuando aparece la fecha, reconstruye el PDF completo sin hojas
+    blancas y sustituye la versión unificada anterior.
+11. La hoja `BD_DESV` conserva una ubicación digital por registro mediante
+    `ACCESO DIGITAL`, `DRIVE FOLDER`, `DOCUMENTOS DRIVE` y `PDF UNIFICADO`.
+    La aplicación solo muestra enlaces directos y habilita descargas a usuarios
+    con rol autorizado o permiso de descarga explícito.
+12. Los expedientes completos confirmados pueden contener todos los
+    complementos aunque la clasificación automática agrupe páginas en un bloque.
+    La separación por tipo documental debe conservar el PDF completo y no
+    descartar páginas.
 
 Los archivos sin fecha se guardan en `Pendientes` hasta que el expediente tenga
 fecha de solicitud; después se trasladan al año y subcarpeta documental

@@ -7,7 +7,7 @@ import tempfile
 from urllib.parse import urlparse
 
 # Versión actual de la aplicación instalada
-CURRENT_VERSION = "1.1.9"
+CURRENT_VERSION = "1.1.10"
 
 # GitHub Raw será la fuente pública de versiones cuando el repositorio se publique.
 DEFAULT_VERSION_CHECK_URL = (
@@ -105,8 +105,14 @@ def prompt_user_to_update(remote_version, download_url, changelog):
 
     threading.Thread(target=_mostrar_dialogo, daemon=True).start()
 
+
+def _literal_powershell(valor):
+    """Escapa una ruta para usarla como literal de cadena en PowerShell."""
+    return "'" + str(valor).replace("'", "''") + "'"
+
+
 def download_and_apply_update(download_url):
-    """Descarga el instalador, cierra la app y reinicia la versión actualizada."""
+    """Descarga, instala con elevación y reinicia la aplicación actualizada."""
     if not download_url:
         return
 
@@ -123,39 +129,58 @@ def download_and_apply_update(download_url):
         tempfile.gettempdir(),
         f"SistemaDesvinculaciones-update-{os.getpid()}.exe",
     )
-    script_limpieza = os.path.join(
+    script_actualizacion = os.path.join(
         tempfile.gettempdir(),
-        f"SistemaDesvinculaciones-update-{os.getpid()}.cmd",
+        f"SistemaDesvinculaciones-update-{os.getpid()}.ps1",
     )
     ejecutable = obtener_ruta_ejecutable()
 
     try:
         response = requests.get(download_url, stream=True, timeout=60)
         response.raise_for_status()
+        tamano_descargado = 0
         with open(instalador, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
+                    tamano_descargado += len(chunk)
+        if tamano_descargado == 0:
+            raise OSError("El instalador descargado está vacío.")
 
-        bat_content = f"""@echo off
-timeout /t 2 /nobreak >nul
-start "" /wait "{instalador}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS
-start "" "{ejecutable}"
-del /f /q "{instalador}" >nul 2>&1
-del /f /q "%~f0" >nul 2>&1
+        script_content = f"""$ErrorActionPreference = 'Stop'
+$installer = {_literal_powershell(instalador)}
+$application = {_literal_powershell(ejecutable)}
+Start-Sleep -Seconds 2
+$arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS')
+$process = Start-Process -FilePath $installer -ArgumentList $arguments -Verb RunAs -Wait -PassThru
+if ($process.ExitCode -ne 0) {{
+    exit $process.ExitCode
+}}
+Start-Process -FilePath $application -WorkingDirectory (Split-Path -Parent $application)
+Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
 """
-        with open(script_limpieza, "w", encoding="utf-8") as f:
-            f.write(bat_content)
+        with open(script_actualizacion, "w", encoding="utf-8") as f:
+            f.write(script_content)
 
         subprocess.Popen(
-            ["cmd.exe", "/c", script_limpieza],
-            creationflags=0x08000000,
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                script_actualizacion,
+            ],
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+            | subprocess.DETACHED_PROCESS
+            | subprocess.CREATE_NO_WINDOW,
         )
-        # sys.exit solo termina el hilo de Streamlit que llamó esta función.
+        # El proceso auxiliar espera a que esta instancia libere sus archivos.
         os._exit(0)
 
     except (OSError, requests.RequestException):
-        for ruta in (instalador, script_limpieza):
+        for ruta in (instalador, script_actualizacion):
             try:
                 if os.path.exists(ruta):
                     os.remove(ruta)

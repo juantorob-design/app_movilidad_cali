@@ -1,5 +1,5 @@
 {
-  "version": "1.1.9",
-  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.9/SistemaDesvinculaciones-Setup-1.1.9.exe",
-  "changelog": "IA local OCR con ONNX Runtime DirectML incluido, selección automática de GPU y respaldo CPU."
+  "version": "1.1.10",
+  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.10/SistemaDesvinculaciones-Setup-1.1.10.exe",
+  "changelog": "Foliación editable del expediente, conteo automático de hojas, OCR local con DirectML y sincronización documental."
 }

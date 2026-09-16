@@ -1095,13 +1095,99 @@ def carpeta_drive_para_documento(service, carpeta_expediente_id, tipo_documento)
     )
 
 
+def preparar_carga_drive(
+    service,
+    archivos,
+    radicado,
+    placa,
+    fecha,
+    tipo_fallback,
+    carga_id,
+):
+    """Sube de inmediato las partes detectadas; el PDF unificado se crea al guardar."""
+    if not service:
+        return [], None, "Google Drive no está autenticado."
+    try:
+        if fecha:
+            carpeta_expediente = carpeta_drive_para_expediente(
+                service,
+                str(fecha),
+                radicado or "RADICADO_PENDIENTE",
+                placa or "PLACA_PENDIENTE",
+                f"Carga-{carga_id}",
+            )
+        else:
+            pendientes = carpeta_drive_para_pendientes(service)
+            carpeta_expediente = buscar_o_crear_carpeta_drive(
+                service,
+                pendientes,
+                f"Carga-{radicado or carga_id}",
+            )
+        if not carpeta_expediente:
+            return [], None, "No fue posible crear la carpeta de carga en Drive."
+
+        documentos = []
+        for archivo in archivos:
+            contenido = archivo.getvalue()
+            if not archivo.name.lower().endswith(".pdf"):
+                contenido = convertir_imagen_a_pdf(contenido, archivo.name)
+            partes = separar_pdf_completo(contenido, tipo_fallback)
+            for numero, parte in enumerate(partes, start=1):
+                tipo = parte.get("tipo") or tipo_fallback or "Otro"
+                carpeta_tipo = carpeta_drive_para_documento(
+                    service,
+                    carpeta_expediente,
+                    tipo,
+                )
+                base = re.sub(
+                    r"[^A-Za-z0-9._-]+",
+                    "_",
+                    os.path.splitext(archivo.name)[0],
+                ).strip("_") or f"carga_{carga_id}"
+                nombre = f"{base}_{tipo}_{numero:02d}.pdf"
+                existente = buscar_archivo_drive(
+                    service,
+                    carpeta_tipo,
+                    nombre,
+                    parte["contenido"],
+                )
+                if existente:
+                    file_id = existente.get("id")
+                    drive_url = existente.get("webViewLink")
+                else:
+                    file_id, drive_url = subir_archivo_a_drive(
+                        service,
+                        io.BytesIO(parte["contenido"]),
+                        nombre,
+                        carpeta_tipo,
+                    )
+                documentos.append({
+                    "nombre": nombre,
+                    "nombre_original": archivo.name,
+                    "tipo_documento": tipo,
+                    "drive_id": file_id,
+                    "drive_url": drive_url,
+                    "drive_folder_id": carpeta_tipo,
+                    "huella": huella_contenido(parte["contenido"]),
+                    "paginas": parte.get("paginas", 0),
+                    "carga_id": carga_id,
+                    "staged": True,
+                })
+        return documentos, carpeta_expediente, None
+    except (OSError, ValueError, TypeError) as error:
+        return [], None, f"No fue posible preparar la carga en Drive: {error}"
+
+
 def mover_archivo_drive(service, file_id, carpeta_destino_id):
     """Mueve un archivo pendiente sin descargarlo ni volverlo a subir."""
     if not service or not file_id or not carpeta_destino_id:
         return False
     try:
         actual = service.files().get(fileId=file_id, fields="parents").execute()
-        padres = ",".join(actual.get("parents", []))
+        padres_lista = actual.get("parents", [])
+        if carpeta_destino_id in padres_lista:
+            return True
+        padres = ",".join(padres_lista)
         service.files().update(
             fileId=file_id,
             addParents=carpeta_destino_id,
@@ -1111,6 +1197,26 @@ def mover_archivo_drive(service, file_id, carpeta_destino_id):
         return True
     except Exception as error:
         st.warning(f"No fue posible mover el pendiente al expediente: {error}")
+        return False
+
+
+def mover_carpeta_drive(service, folder_id, carpeta_destino_id):
+    """Mueve una carpeta de Pendientes al año definitivo sin duplicar su contenido."""
+    return mover_archivo_drive(service, folder_id, carpeta_destino_id)
+
+
+def renombrar_carpeta_drive(service, folder_id, nombre):
+    if not service or not folder_id or not nombre:
+        return False
+    try:
+        service.files().update(
+            fileId=folder_id,
+            body={"name": nombre},
+            fields="id,name",
+        ).execute()
+        return True
+    except Exception as error:
+        st.warning(f"No fue posible renombrar la carpeta del expediente: {error}")
         return False
 
 
@@ -1279,6 +1385,14 @@ def _extraer_texto_pdf(contenido, progreso=None):
         for indice, pagina in enumerate(documento):
             if OCR_MAX_PAGES is not None and indice >= OCR_MAX_PAGES:
                 break
+            pixmap_vista = pagina.get_pixmap(
+                matrix=fitz.Matrix(0.35, 0.35),
+                alpha=False,
+            )
+            if pagina_pixeles_blancos(pixmap_vista):
+                if progreso:
+                    progreso(indice + 1, total_paginas)
+                continue
             texto_pagina = obtener_texto_ocr_pagina(
                 contenido,
                 indice,
@@ -1312,6 +1426,27 @@ def normalizar_texto_documento(texto):
     return " ".join(str(texto or "").replace("\xa0", " ").split())
 
 
+def normalizar_errores_ocr(texto):
+    """Corrige errores frecuentes del OCR antes de aplicar reglas documentales."""
+    texto = normalizar_texto_documento(texto)
+    reemplazos = (
+        (r"resoluci[oó6]n", "resolución"),
+        (r"notificaci[oó6]n", "notificación"),
+        (r"ejecutori[aá6]|ejecutor[ií]a", "ejecutoria"),
+        (r"radicad[oó6]\s*no\b|radicadono\b", "radicado no"),
+        (r"direcci[oó6]n", "dirección"),
+        (r"matr[ií1]cula", "matrícula"),
+        (r"c[eé3]dula", "cédula"),
+        (r"fech[aá]\s*(?:de\s*)?resoluci[oó6]n", "fecha resolución"),
+        (r"fech[aá]\s*(?:de\s*)?notificaci[oó6]n", "fecha notificación"),
+        (r"fech[aá]\s*(?:de\s*)?recurso", "fecha recurso"),
+        (r"fech[aá]\s*(?:de\s*)?radicaci[oó]n", "fecha radicación"),
+    )
+    for patron, reemplazo in reemplazos:
+        texto = re.sub(patron, reemplazo, texto, flags=re.IGNORECASE)
+    return texto
+
+
 def fecha_para_formulario(valor):
     try:
         return datetime.date.fromisoformat(str(valor).strip()) if valor else None
@@ -1329,14 +1464,14 @@ def combinar_datos_detectados(destino, nuevos):
 
 def extraer_datos_pdf(contenido, texto=None):
     """Extrae metadatos de PDFs digitales; devuelve vacío si es un escaneo sin OCR."""
-    texto = normalizar_texto_documento(
+    texto = normalizar_errores_ocr(
         extraer_texto_pdf(contenido) if texto is None else texto
     )
     if not texto:
         return {}
     patrones = {
         "radicado_padre": [
-            r"\b(?:rad|radicado|radicaci[oó]n|orfeo)\s*(?:padre|principal)?\s*[:.#\-]?\s*([A-Z0-9][A-Z0-9./\-]{7,})\b",
+            r"\b(?:rad|radicado|radicaci[oó]n|orfeo)\s*(?:padre|principal)?\s*(?:no\.?)?\s*[:.#\-]?\s*([A-Z0-9][A-Z0-9./\-]{7,})\b",
             r"\b(20\d{2}\d{14,18})\b",
         ],
         "placa": [
@@ -1351,24 +1486,24 @@ def extraer_datos_pdf(contenido, texto=None):
             r"dic(?:iembre)?)\s+(?:de\s+)?20\d{2})\b",
         ],
         "fecha_radicacion": [
-            r"(?:fecha\s+de\s+)?radicaci[oó]n\s*[:#\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
-            r"(?:fecha\s+de\s+)?radicaci[oó]n\s*[:#\-]?\s*(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
+            r"(?:fecha\s+de\s+)?radicaci[oó]n\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+            r"(?:fecha\s+de\s+)?radicaci[oó]n\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
         ],
         "fecha_recurso": [
-            r"fecha\s+(?:de\s+)?recurso\s*[:#\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
-            r"fecha\s+(?:de\s+)?recurso\s*[:#\-]?\s*(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
+            r"fecha\s+(?:de\s+)?recurso\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+            r"fecha\s+(?:de\s+)?recurso\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
         ],
         "fecha_resolucion": [
-            r"fecha\s+(?:de\s+)?resoluci[oó]n\s*[:#\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
-            r"fecha\s+(?:de\s+)?resoluci[oó]n\s*[:#\-]?\s*(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
+            r"fecha\s+(?:de\s+)?resoluci[oó]n\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+            r"fecha\s+(?:de\s+)?resoluci[oó]n\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
         ],
         "fecha_notificacion": [
-            r"fecha\s+(?:de\s+)?notificaci[oó]n\s*[:#\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
-            r"fecha\s+(?:de\s+)?notificaci[oó]n\s*[:#\-]?\s*(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
+            r"fecha\s+(?:de\s+)?notificaci[oó]n\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+            r"fecha\s+(?:de\s+)?notificaci[oó]n\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
         ],
         "fecha_ejecutoria": [
-            r"fecha\s+(?:de\s+)?(?:constancia\s+de\s+)?ejecutoria\s*[:#\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
-            r"fecha\s+(?:de\s+)?(?:constancia\s+de\s+)?ejecutoria\s*[:#\-]?\s*(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
+            r"fecha\s+(?:de\s+)?(?:constancia\s+de\s+)?ejecutoria\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+            r"fecha\s+(?:de\s+)?(?:constancia\s+de\s+)?ejecutoria\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
         ],
         "correo": [
             r"\b([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})\b",
@@ -1380,20 +1515,20 @@ def extraer_datos_pdf(contenido, texto=None):
             r"\b(?:c[eé]dula|c\.c\.|identificaci[oó]n)\s*[:#\-]?\s*([0-9][0-9.\s]{5,14})\b",
         ],
         "empresa": [
-            r"\bempresa\s*[:#\-]\s*([^|]{3,100}?)(?=\s+(?:NIT|propietario|placa|radicado|resoluci[oó]n|correo)\b|$)",
+            r"\bempresa\s*[:#\-]?\s*([^|]{3,100}?)(?=\s+(?:NIT|propietario|placa|radicado|resoluci[oó]n|correo)\b|$)",
         ],
         "propietario": [
-            r"\bpropietario(?:\s+del\s+veh[ií]culo)?\s*[:#\-]\s*([^|]{3,100}?)(?=\s+(?:c[eé]dula|CC|placa|direcci[oó]n|resoluci[oó]n|correo|NIT)\b|$)",
+            r"\bpropietario(?:\s+del\s+veh[ií]culo)?\s*[:#\-]?\s*([^|]{3,100}?)(?=\s+(?:c[eé]dula|CC|placa|direcci[oó]n|resoluci[oó]n|correo|NIT)\b|$)",
             r"\b(?:representante\s+legal|gerente)\s*[:#\-]?\s*([A-ZÁÉÍÓÚÑ][^|]{3,100}?)(?=\s+(?:identificado|con\s+c[eé]dula|NIT|solicito)\b)",
         ],
         "direccion_empresa": [
-            r"\bdirecci[oó]n\s+(?:de\s+)?empresa\s*[:#\-]\s*([^|]{5,150}?)(?=\s+(?:propietario|NIT|radicado|nueva\s+empresa)\b|$)",
+            r"\bdirecci[oó]n\s+(?:de\s+)?empresa\s*[:#\-]?\s*([^|]{5,150}?)(?=\s+(?:direcci[oó]n|propietario|NIT|radicado|nueva\s+empresa)\b|$)",
         ],
         "direccion_propietario": [
-            r"\bdirecci[oó]n\s+(?:del\s+)?propietario\s*[:#\-]\s*([^|]{5,150}?)(?=\s+(?:propietario|c[eé]dula|placa|radicado|nueva\s+empresa)\b|$)",
+            r"\bdirecci[oó]n\s+(?:del\s+)?propietario\s*[:#\-]?\s*([^|]{5,150}?)(?=\s+(?:propietario|c[eé]dula|placa|radicado|nueva\s+empresa)\b|$)",
         ],
         "nueva_empresa": [
-            r"\bnueva\s+empresa\s*[:#\-]\s*([^|]{3,120}?)(?=\s+(?:NIT|radicado|placa|fecha)\b|$)",
+            r"\bnueva\s+empresa\s*[:#\-]?\s*([^|]{3,120}?)(?=\s+(?:NIT|radicado|placa|fecha)\b|$)",
         ],
         "tipo_notificacion": [
             r"\bnotificaci[oó]n\s+(?:por\s+)?(personal|citación|citaci[oó]n|aviso|publicaci[oó]n|electrónica|electronica|correo)\b",
@@ -1461,6 +1596,36 @@ def extraer_datos_pdf(contenido, texto=None):
         )
         if coincidencia_resolucion:
             datos["resolucion"] = coincidencia_resolucion.group(1).strip()
+
+    def fecha_en_contexto(etiquetas):
+        etiqueta = "|".join(etiquetas)
+        coincidencia = re.search(
+            rf"(?:{etiqueta}).{{0,100}}?"
+            r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+            texto,
+            flags=re.IGNORECASE,
+        )
+        if not coincidencia:
+            return ""
+        valor = coincidencia.group(1)
+        partes = re.split(r"[/-]", valor)
+        if len(partes) != 3:
+            return ""
+        if len(partes[0]) == 4:
+            return "-".join(partes)
+        dia, mes, anio = partes
+        return f"{'20' + anio if len(anio) == 2 else anio}-{mes.zfill(2)}-{dia.zfill(2)}"
+
+    for campo, etiquetas in {
+        "fecha_resolucion": (r"resoluci[oó]n",),
+        "fecha_notificacion": (r"notificaci[oó]n",),
+        "fecha_ejecutoria": (r"ejecutoria",),
+        "fecha_recurso": (r"recurso",),
+    }.items():
+        if not datos.get(campo):
+            fecha_contexto = fecha_en_contexto(etiquetas)
+            if fecha_contexto:
+                datos[campo] = fecha_contexto
     return datos
 
 
@@ -1623,7 +1788,7 @@ def extraer_texto_ocr_pixmap(pixmap):
 
 
 def clasificar_tipo_documento(texto, tipo_fallback):
-    evidencia = normalizar_texto_documento(texto).lower()
+    evidencia = normalizar_errores_ocr(texto).lower()
     if re.search(
         r"\bsin\s+recurso\b|no\s+interpuso|no\s+present[oó]|"
         r"sin\s+interponer",
@@ -1651,7 +1816,7 @@ def clasificar_tipo_documento(texto, tipo_fallback):
 
 def tipos_documentales_detectados(texto, tipo_fallback):
     """Devuelve todos los tipos mencionados en un expediente unificado."""
-    evidencia = normalizar_texto_documento(texto).lower()
+    evidencia = normalizar_errores_ocr(texto).lower()
     reglas = [
         ("Desistimiento", r"desistim|desiste"),
         ("Recurso", r"\brecurso\b|reposici[oó]n|apelaci[oó]n"),
@@ -1687,7 +1852,7 @@ def nombre_documento_expediente(radicado, placa, fecha, ubicacion, extension):
 
 def clasificar_tipo_caso(texto="", nombre=""):
     """Identifica uno de los tres desenlaces válidos del expediente."""
-    evidencia = normalizar_texto_documento(f"{nombre} {texto}").lower()
+    evidencia = normalizar_errores_ocr(f"{nombre} {texto}").lower()
     if re.search(r"desistim|desestimiento|desistimiento|desiste", evidencia):
         return "Desistimiento"
     if re.search(
@@ -1850,6 +2015,17 @@ COLUMNAS_SHEET_OFICIALES = [
     "FECHA EJECUTORIA",
     "FECHA REMISIÓN REGISTRO",
     "QX VERIFICADO",
+    "ID EXPEDIENTE",
+    "UBICACION FISICA",
+    "CAJA",
+    "FOLDER",
+    "CARPETA",
+    "FOLIACION",
+    "FECHA ULTIMA MODIFICACION",
+    "SUBIDO POR",
+    "CORREO SUBIDA",
+    "CARGO SUBIDA",
+    "ACCESO DIGITAL",
     "DRIVE FOLDER",
     "DOCUMENTOS DRIVE",
     "PDF UNIFICADO",
@@ -1866,8 +2042,8 @@ def letra_columna(numero):
     return resultado
 
 
-def buscar_registro_en_sheets(service, radicado="", placa=""):
-    if not service or (not radicado and not placa):
+def buscar_registro_en_sheets(service, radicado="", placa="", fecha=""):
+    if not service or (not radicado and not placa and not fecha):
         return None
     try:
         filas = leer_registros_sheets(service)
@@ -1882,10 +2058,20 @@ def buscar_registro_en_sheets(service, radicado="", placa=""):
             (i for i, valor in enumerate(encabezados) if valor == "PLACA"),
             None,
         )
+        indice_fecha = next(
+            (
+                i for i, valor in enumerate(encabezados)
+                if valor in {"FECHA", "FECHA SOLICITUD", "FECHA_SOLICITUD"}
+            ),
+            None,
+        )
         coincidencia_por_placa = None
+        coincidencia_por_fecha = None
+        fecha_normalizada = str(fecha or "").strip()
         for numero, fila in enumerate(filas[1:], start=2):
             valor_rad = str(fila[indice_rad]).strip().upper() if indice_rad is not None and len(fila) > indice_rad else ""
             valor_placa = str(fila[indice_placa]).strip().upper() if indice_placa is not None and len(fila) > indice_placa else ""
+            valor_fecha = str(fila[indice_fecha]).strip() if indice_fecha is not None and len(fila) > indice_fecha else ""
             coincide_radicado = (
                 bool(radicado)
                 and valor_rad == str(radicado).strip().upper()
@@ -1906,8 +2092,18 @@ def buscar_registro_en_sheets(service, radicado="", placa=""):
                     "numero": numero,
                     "encabezados": encabezados,
                 }
+            if fecha_normalizada and valor_fecha == fecha_normalizada and not coincidencia_por_fecha:
+                coincidencia_por_fecha = {
+                    "fila": fila,
+                    "numero": numero,
+                    "encabezados": encabezados,
+                }
+            elif fecha_normalizada and valor_fecha == fecha_normalizada:
+                coincidencia_por_fecha = "multiple"
         if coincidencia_por_placa and not radicado:
             return coincidencia_por_placa
+        if coincidencia_por_fecha and coincidencia_por_fecha != "multiple" and not radicado and not placa:
+            return coincidencia_por_fecha
     except Exception as error:
         st.warning(f"No fue posible consultar el registro actual de Google Sheets: {error}")
     return None
@@ -1933,6 +2129,8 @@ def datos_registro_sheet(registro_sheet):
         "RESOLUCN DESVINCULACN": "resolucion",
         "FECHA DESVINCULACION": "fecha_resolucion",
         "FECHA DESVINCULACN": "fecha_resolucion",
+        "RESOLUCION": "resolucion",
+        "RESOLUCION DESVINCULACION": "resolucion",
         "OBSERVACION": "observacion",
         "FUNCIONARIO QUE DESVINCULA": "funcionario",
         "NUEVA EMPRESA": "nueva_empresa",
@@ -1948,6 +2146,17 @@ def datos_registro_sheet(registro_sheet):
         "FECHA EJECUTORIA": "fecha_ejecutoria",
         "FECHA REMISION REGISTRO": "fecha_remision_registro",
         "QX VERIFICADO": "qx_verificado",
+        "ID EXPEDIENTE": "id",
+        "UBICACION FISICA": "ubicacion",
+        "CAJA": "caja",
+        "FOLDER": "folder",
+        "CARPETA": "carpeta",
+        "FOLIACION": "foliacion",
+        "FECHA ULTIMA MODIFICACION": "ultima_modificacion",
+        "SUBIDO POR": "subido_por",
+        "CORREO SUBIDA": "correo_subida",
+        "CARGO SUBIDA": "cargo_subida",
+        "ACCESO DIGITAL": "drive_folder",
         "DRIVE FOLDER": "drive_folder",
         "DOCUMENTOS DRIVE": "documentos_drive",
         "PDF UNIFICADO": "pdf_unificado",
@@ -1989,6 +2198,7 @@ def resumen_documentos_drive(registro_datos):
         )
     faltantes = documentos_faltantes(registro_datos)
     return {
+        "ACCESO DIGITAL": registro_datos.get("drive_folder", ""),
         "DRIVE FOLDER": registro_datos.get("drive_folder", ""),
         "DOCUMENTOS DRIVE": " | ".join(documentos_con_enlace),
         "PDF UNIFICADO": next(
@@ -2044,6 +2254,17 @@ def valores_registro_para_sheet(registro_datos, columnas_drive):
         "FECHA EJECUTORIA": registro_datos.get("fecha_ejecutoria", ""),
         "FECHA REMISION REGISTRO": registro_datos.get("fecha_remision_registro", ""),
         "QX VERIFICADO": "SI" if registro_datos.get("qx_verificado") else "NO",
+        "ID EXPEDIENTE": registro_datos.get("id", ""),
+        "UBICACION FISICA": registro_datos.get("ubicacion", ""),
+        "CAJA": registro_datos.get("caja", ""),
+        "FOLDER": registro_datos.get("folder", ""),
+        "CARPETA": registro_datos.get("carpeta", ""),
+        "FOLIACION": registro_datos.get("foliacion", ""),
+        "FECHA ULTIMA MODIFICACION": registro_datos.get("ultima_modificacion", ""),
+        "SUBIDO POR": registro_datos.get("subido_por", ""),
+        "CORREO SUBIDA": registro_datos.get("correo_subida", ""),
+        "CARGO SUBIDA": registro_datos.get("cargo_subida", ""),
+        "ACCESO DIGITAL": registro_datos.get("drive_folder", ""),
     }
     valores.update(columnas_drive)
     return valores
@@ -2121,6 +2342,7 @@ def guardar_registro_en_sheets(service, registro_datos):
             service,
             registro_datos.get("radicado_padre"),
             registro_datos.get("placa"),
+            registro_datos.get("fecha_solicitud"),
         )
         if existente:
             fila = list(existente["fila"])
@@ -3166,6 +3388,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
         tipos_documentales_carga = set()
         textos_analizados = {}
         fecha_carga = None
+        tipo_caso_detectado = ""
         if archivos_canvas:
             opciones_orden = [
                 f"{indice + 1:02d} - {archivo.name}"
@@ -3255,11 +3478,45 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     "Si el PDF es un escaneo como imagen, completa los campos "
                     "manualmente o habilita OCR en el equipo."
                 )
+            tipo_caso_detectado = clasificar_tipo_caso(
+                " ".join(textos_analizados.values()),
+                " ".join(archivo.name for archivo in archivos_canvas),
+            )
+            carga_staging = st.session_state.setdefault("_cargas_drive", {})
+            if drive_service and carga_id not in carga_staging:
+                documentos_staged, carpeta_staged, error_staging = preparar_carga_drive(
+                    drive_service,
+                    archivos_canvas,
+                    datos_carga.get("radicado_padre", ""),
+                    datos_carga.get("placa", ""),
+                    datos_carga.get("fecha_solicitud", ""),
+                    tipo_documento,
+                    carga_id,
+                )
+                if error_staging:
+                    st.warning(error_staging)
+                elif documentos_staged:
+                    carga_staging[carga_id] = {
+                        "documentos": documentos_staged,
+                        "drive_folder_id": carpeta_staged,
+                    }
+                    st.success(
+                        "Partes documentales subidas a Drive para continuar el análisis. "
+                        "El PDF unificado se generará al completar el registro."
+                    )
+            elif not drive_service:
+                st.warning(
+                    "Drive no está autenticado: la carga se conserva localmente y "
+                    "no se puede crear la estructura documental remota."
+                )
             if len(tipos_carga) == 1:
                 st.info(f"Desenlace detectado: {next(iter(tipos_carga))}")
             elif len(tipos_carga) > 1:
                 st.warning("Se detectaron varios desenlaces; revisa que pertenezcan al mismo expediente.")
-            tipo_checklist = next(iter(tipos_carga), "Detección automática")
+            tipo_checklist = tipo_caso_detectado or next(
+                iter(tipos_carga),
+                "Detección automática",
+            )
             if tipo_checklist in DOCUMENTOS_BASE_POR_CASO:
                 renderizar_checklist_documental(
                     tipo_checklist,
@@ -3277,7 +3534,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 resumen_col2.metric("Campos leídos", len(campos_detectados))
                 resumen_col3.metric(
                     "Desenlace",
-                    next(iter(tipos_carga), "Por confirmar"),
+                    tipo_checklist if tipo_checklist in TIPOS_CASO else "Por confirmar",
                 )
                 st.write(
                     "✅ Archivo recibido y analizado. "
@@ -3329,13 +3586,21 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 st.info(f"**Destino previsto**\n\n`{destino_texto}`")
                 if expediente_vista:
                     st.success("Este radicado ya tiene un expediente registrado.")
-                    if expediente_vista.get("drive_folder"):
+                    if expediente_vista.get("drive_folder") and puede_descargar:
                         st.markdown(
                             f"[Abrir carpeta actual del expediente]({expediente_vista['drive_folder']})"
                         )
-                    if expediente_vista.get("pdf_unificado"):
+                    if expediente_vista.get("pdf_unificado") and puede_descargar:
                         st.markdown(
                             f"[Abrir PDF completo actual]({expediente_vista['pdf_unificado']})"
+                        )
+                    if (
+                        not puede_descargar
+                        and (expediente_vista.get("drive_folder") or expediente_vista.get("pdf_unificado"))
+                    ):
+                        st.caption(
+                            "El acceso directo de Drive y la descarga están reservados "
+                            "para usuarios autorizados."
                         )
                 else:
                     st.caption(
@@ -3368,6 +3633,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 sheets_service,
                 datos_carga.get("radicado_padre", ""),
                 datos_carga.get("placa", ""),
+                datos_carga.get("fecha_solicitud", ""),
             )
             datos_sheet = datos_registro_sheet(registro_sheet)
             if datos_sheet:
@@ -3379,7 +3645,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     "Campos encontrados en Sheets: "
                     + ", ".join(datos_sheet.keys())
                 )
-            datos_carga = {**datos_sheet, **datos_carga}
+            datos_carga = {**datos_carga, **datos_sheet}
             if datos_carga.get("fecha_solicitud"):
                 try:
                     fecha_carga = datetime.date.fromisoformat(
@@ -3388,6 +3654,15 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 except ValueError:
                     st.warning("La fecha detectada no pudo convertirse; debes verificarla.")
 
+        foliacion_detectada = 0
+        for archivo in archivos_canvas:
+            if not archivo.name.lower().endswith(".pdf") or PdfReader is None:
+                continue
+            try:
+                foliacion_detectada += len(PdfReader(io.BytesIO(archivo.getvalue())).pages)
+            except (OSError, ValueError):
+                continue
+        foliacion_inicial = int(datos_carga.get("foliacion") or foliacion_detectada or 0)
         campos_formulario = {
             f"radicado_padre_{carga_id}": datos_carga.get("radicado_padre", ""),
             f"fecha_solicitud_{carga_id}": fecha_carga,
@@ -3404,10 +3679,40 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 "",
             ),
             f"observacion_{carga_id}": datos_carga.get("observacion", ""),
-            f"tipo_caso_{carga_id}": next(
-                iter(tipos_carga),
-                "Detección automática",
+            f"tipo_caso_{carga_id}": (
+                tipo_caso_detectado
+                if tipo_caso_detectado in TIPOS_CASO
+                else "Detección automática"
             ),
+            f"solicitante_{carga_id}": datos_carga.get("solicitante", "Propietario"),
+            f"qx_verificado_{carga_id}": bool(datos_carga.get("qx_verificado", False)),
+            f"fecha_resolucion_{carga_id}": fecha_para_formulario(
+                datos_carga.get("fecha_resolucion")
+            ),
+            f"tipo_notificacion_{carga_id}": datos_carga.get("tipo_notificacion", ""),
+            f"fecha_notificacion_{carga_id}": fecha_para_formulario(
+                datos_carga.get("fecha_notificacion")
+            ),
+            f"fecha_ejecutoria_{carga_id}": fecha_para_formulario(
+                datos_carga.get("fecha_ejecutoria")
+            ),
+            f"fecha_remision_{carga_id}": fecha_para_formulario(
+                datos_carga.get("fecha_remision_registro")
+            ),
+            f"remitido_{carga_id}": bool(datos_carga.get("remitido", False)),
+            f"notas_{carga_id}": datos_carga.get("notas", ""),
+            f"direccion_propietario_{carga_id}": datos_carga.get(
+                "direccion_propietario",
+                "",
+            ),
+            f"nueva_empresa_{carga_id}": datos_carga.get("nueva_empresa", ""),
+            f"recurso_{carga_id}": datos_carga.get("recurso", ""),
+            f"fecha_recurso_{carga_id}": fecha_para_formulario(
+                datos_carga.get("fecha_recurso")
+            ),
+            f"fecha_radicacion_{carga_id}": datos_carga.get("fecha_radicacion", ""),
+            f"observacion_{carga_id}": datos_carga.get("observacion", ""),
+            f"foliacion_{carga_id}": foliacion_inicial,
         }
         carga_anterior = st.session_state.get("_registro_carga_id")
         if carga_anterior != carga_id:
@@ -3453,6 +3758,17 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     options=TIPOS_CASO,
                     index=TIPOS_CASO.index(tipo_inicial),
                     key=f"tipo_caso_{carga_id}",
+                )
+                foliacion_registro = st.number_input(
+                    "Foliación (hojas)",
+                    min_value=0,
+                    step=1,
+                    value=foliacion_inicial,
+                    key=f"foliacion_{carga_id}",
+                    help=(
+                        "Se propone el conteo del PDF, pero puedes corregirlo. "
+                        "El valor guardado manualmente tiene prioridad."
+                    ),
                 )
             with f_col2:
                 matricula_qx = st.text_input(
@@ -3514,7 +3830,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 )
                 fecha_remision = st.date_input(
                     "Fecha remisión a registro",
-                    value=None,
+                    value=fecha_para_formulario(datos_carga.get("fecha_remision_registro")),
                     key=f"fecha_remision_{carga_id}",
                 )
                 notas = st.text_area(
@@ -3609,6 +3925,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         sheets_service,
                         radicado_padre.strip(),
                         matricula_qx.strip(),
+                        str(fecha_solicitud or ""),
                     )
                     datos_sheet = datos_registro_sheet(registro_existente_sheet)
                 if not radicado_padre.strip() and datos_sheet.get("radicado_padre"):
@@ -3653,8 +3970,39 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 archivos_ordenados = archivos_canvas or []
                 carpeta_expediente_drive_id = None
                 fecha_registro_previa = fecha_solicitud or fecha_expediente
+                staged_carga = st.session_state.get("_cargas_drive", {}).get(
+                    carga_id,
+                    {},
+                )
+                staged_folder_id = staged_carga.get("drive_folder_id")
                 if drive_service:
-                    if fecha_registro_previa:
+                    if staged_folder_id and fecha_registro_previa:
+                        carpeta_anual_id = carpeta_drive_para_fecha(
+                            drive_service,
+                            str(fecha_registro_previa),
+                        )
+                        if carpeta_anual_id:
+                            mover_carpeta_drive(
+                                drive_service,
+                                staged_folder_id,
+                                carpeta_anual_id,
+                            )
+                        nombre_expediente = nombre_documento_expediente(
+                            radicado_padre,
+                            matricula_qx or placa_expediente,
+                            str(fecha_registro_previa),
+                            cod_ub,
+                            "",
+                        )
+                        renombrar_carpeta_drive(
+                            drive_service,
+                            staged_folder_id,
+                            nombre_expediente,
+                        )
+                        carpeta_expediente_drive_id = staged_folder_id
+                    elif staged_folder_id:
+                        carpeta_expediente_drive_id = staged_folder_id
+                    elif fecha_registro_previa:
                         carpeta_expediente_drive_id = carpeta_drive_para_expediente(
                             drive_service,
                             str(fecha_registro_previa),
@@ -3666,6 +4014,25 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         carpeta_expediente_drive_id = carpeta_drive_para_pendientes(
                             drive_service
                         )
+                staged_documentos = [
+                    documento.copy()
+                    for documento in staged_carga.get("documentos", [])
+                ]
+                if drive_service and carpeta_expediente_drive_id:
+                    for documento in staged_documentos:
+                        carpeta_tipo = carpeta_drive_para_documento(
+                            drive_service,
+                            carpeta_expediente_drive_id,
+                            documento.get("tipo_documento", "Otro"),
+                        )
+                        if carpeta_tipo and documento.get("drive_id"):
+                            if mover_archivo_drive(
+                                drive_service,
+                                documento["drive_id"],
+                                carpeta_tipo,
+                            ):
+                                documento["drive_folder_id"] = carpeta_tipo
+                canvas_list.extend(staged_documentos)
                 if archivos_canvas and orden_archivos:
                     indices = [
                         int(opcion.split(" - ", 1)[0]) - 1
@@ -3791,6 +4158,20 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         )
                         file_id, drive_url = None, None
                         huella = huella_contenido(contenido_archivo)
+                        staged_existente = next(
+                            (
+                                documento for documento in canvas_list
+                                if documento.get("staged")
+                                and documento.get("huella") == huella
+                            ),
+                            None,
+                        )
+                        if staged_existente:
+                            st.info(
+                                f"Se reutilizó desde Drive la parte ya cargada: "
+                                f"{nombre_original}"
+                            )
+                            continue
                         duplicado_local = next(
                             (
                                 documento for documento in (
@@ -4026,8 +4407,8 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 existente_final = st.session_state.db_expedientes.get(radicado_registro)
                 fuente_existente = {
                     **(existente_final or {}),
-                    **datos_sheet,
                     **datos_detectados,
+                    **datos_sheet,
                 }
 
                 def valor_actual(campo, valor_nuevo=""):
@@ -4080,6 +4461,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         "fecha_radicacion",
                         fecha_radicacion_registro.strip(),
                     ),
+                    "foliacion": int(foliacion_registro),
                     "qx_verificado": qx_verificado or fuente_existente.get("qx_verificado", False),
                     "resolucion": valor_actual("resolucion", num_resolucion),
                     "fecha_resolucion": valor_actual(
@@ -4117,6 +4499,9 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         ),
                     ),
                     "modificado_por": datos_usuario["alias"],
+                    "subido_por": datos_usuario.get("alias", correo_activo),
+                    "correo_subida": correo_activo,
+                    "cargo_subida": rol_actual,
                     "notas": valor_actual("notas", notas.strip()),
                     "nombre_ubicacion": nombre_documento_expediente(
                         radicado_registro,
@@ -4327,14 +4712,22 @@ elif st.session_state.navegacion == "Consulta & Archivo":
             )
         ):
             st.subheader("Índice Google Sheets - Google Drive")
-            if exp.get("drive_folder"):
+            if exp.get("drive_folder") and puede_descargar:
                 st.markdown(f"[Abrir carpeta del expediente en Drive]({exp['drive_folder']})")
             if exp.get("documentos_drive"):
                 st.caption("Archivos registrados: " + exp["documentos_drive"])
             if exp.get("contenido_documental"):
                 st.caption("Contenido documental: " + exp["contenido_documental"])
-            if exp.get("pdf_unificado"):
+            if exp.get("pdf_unificado") and puede_descargar:
                 st.markdown(f"[Abrir PDF unificado]({exp['pdf_unificado']})")
+            if (
+                not puede_descargar
+                and (exp.get("drive_folder") or exp.get("pdf_unificado"))
+            ):
+                st.caption(
+                    "El acceso directo de Drive y la descarga están reservados "
+                    "para usuarios autorizados."
+                )
             if exp.get("documentos_faltantes_drive"):
                 st.warning(
                     "Faltantes registrados en Sheets: "

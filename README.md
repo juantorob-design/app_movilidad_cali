@@ -62,6 +62,8 @@ Ejecuta `build_app.ps1` para generar el ejecutable. Después compila
 Las actualizaciones publicadas se consultan mediante `version.json`. Cuando hay
 una versión nueva, la aplicación muestra botones para autorizar **Actualizar
 ahora** o seleccionar **Más tarde**; el instalador no se descarga sin autorización.
+Al autorizarla, la aplicación se cierra, el instalador solicita elevación de
+Windows, espera a terminar la instalación y abre nuevamente la versión actualizada.
 
 El instalador incluye ONNX Runtime DirectML para acelerar el OCR con la GPU
 disponible en Windows. La aplicación detecta automáticamente CUDA, DirectML o
