@@ -1800,13 +1800,20 @@ def extraer_datos_pdf(contenido, texto=None):
     )
     if coincidencia_empresa:
         empresa_detectada = re.split(
-            r"\s+(?:NIT|RESOLUCI|CONTRATO|PLACA)\b",
+            r"\s+(?:NIT|RESOLUCI\w*|NOTIFICACI\w*|CONTRATO|PLACA)\b",
             coincidencia_empresa.group(0),
             maxsplit=1,
             flags=re.IGNORECASE,
         )[0].strip(" .,:;-")
         if len(empresa_detectada) >= len(str(datos.get("empresa", ""))):
             datos["empresa"] = empresa_detectada
+    if datos.get("empresa"):
+        datos["empresa"] = re.split(
+            r"\s+(?:NIT|RESOLUCI\w*|NOTIFICACI\w*|CONTRATO|PLACA)\b",
+            str(datos["empresa"]),
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip(" .,:;-")
     radicado_extraido = str(datos.get("radicado_padre", "")).strip()
     if radicado_extraido and not re.fullmatch(r"20\d{16}", radicado_extraido):
         datos["radicado_revision"] = (
