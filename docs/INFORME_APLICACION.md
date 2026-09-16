@@ -84,7 +84,7 @@ se conservan los archivos fuente junto con su trazabilidad.
 Los documentos complementarios pueden llegar sin la fecha de la petición. Si
 se pueden identificar por radicado o placa, reutilizan los datos del expediente
 o de Sheets. Si todavía no existe la petición principal, se guardan en
-`PDFS Escaneados/Pendientes`, con un nombre identificable, y quedan disponibles
+`Peticion/Pendientes`, con un nombre identificable, y quedan disponibles
 en la bandeja de pendientes para revisarlos, moverlos y unirlos posteriormente.
 
 El checklist documental distingue los tres desenlaces:
@@ -180,12 +180,13 @@ principal de Drive. El archivo antiguo `DESVINCULACIONES ADMIN APP` ya no forma
 parte de la configuración activa.
 
 Los documentos se organizan en Drive con la estructura
-`PDFS Escaneados/AÑO/RADICADO_PLACA_FECHA_UBICACION`. Dentro de cada expediente
+`Peticion/AÑO/RADICADO_PADRE_PLACA_FECHA_UBICACION`. Dentro de cada expediente
 se crea una subcarpeta por tipo documental, como `Solicitud`, `Recurso`,
 `Resolución` o `Notificación`. El PDF unificado permanece en la carpeta raíz
-del expediente y se reconstruye al agregar anexos, conservando también los
-documentos individuales para consulta y descarga. Los anexos cargados sin fecha
-se guardan temporalmente en `Pendientes` y se mueven a la subcarpeta documental
+del expediente con el nombre `RADICADO_PADRE_PLACA_FECHA.pdf` y se reconstruye
+al agregar anexos, conservando también los documentos individuales para consulta
+y descarga. Los anexos cargados sin fecha se guardan temporalmente en
+`Peticion/Pendientes` y se mueven a la carpeta anual y subcarpeta documental
 correspondiente cuando el expediente queda asociado a su fecha.
 
 ## 5. Seguridad y permisos
@@ -209,9 +210,9 @@ instalador de Inno Setup para Windows de 64 bits. El actualizador consulta
 `version.json` en GitHub Raw y, si encuentra una versión superior, descarga el
 instalador correspondiente.
 
-La versión preparada para publicación es la 1.1.11:
+La versión preparada para publicación es la 1.1.12:
 
-<https://github.com/juantorob-design/app_movilidad_cali/releases/tag/v1.1.11>
+<https://github.com/juantorob-design/app_movilidad_cali/releases/tag/v1.1.12>
 
 Cuando existe una versión superior, la aplicación muestra un aviso con los
 botones **Actualizar ahora** y **Más tarde**. La descarga solo inicia después

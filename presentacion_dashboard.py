@@ -51,7 +51,7 @@ st.info(
 )
 
 metricas = [
-    ("Versión operativa", "1.1.11"),
+    ("Versión operativa", "1.1.12"),
     ("Columnas de BD_DESV", 21),
     ("Desenlaces válidos", 3),
     ("Formatos de entrada", 4),
@@ -91,13 +91,18 @@ with tab_resumen:
         st.success("Distribución controlada por roles")
         st.success("Pendientes visibles y reubicables")
 
-    st.subheader("Qué cambió en la versión 1.1.11")
+    st.subheader("Qué cambió en la versión 1.1.12")
     st.markdown(
-        "- Visor del PDF dentro del registro, antes de guardar.\n"
-        "- Resumen de archivos, campos detectados y destino previsto.\n"
-        "- Checklist automático según el desenlace del expediente.\n"
-        "- Bandeja de pendientes para documentos sin fecha de petición.\n"
-        "- Asociación posterior por radicado o placa y unión al expediente."
+        "- OCR local de PDFs con caché persistente y selección DirectML/CPU.\n"
+        "- Detección, clasificación y separación de Solicitud, Resolución, Notificación, Recurso, Desistimiento y Constancia.\n"
+        "- Visor PDF integrado, copias locales, foliación y barra de progreso.\n"
+        "- Formulario administrativo precargado desde OCR, base local y Google Sheets, sin sobrescribir datos confirmados.\n"
+        "- Checklist automático por tipo de caso y advertencia para radicados dudosos.\n"
+        "- Drive organizado en Peticion/Pendientes/AÑO, con PDF completo y complementos en carpetas separadas.\n"
+        "- Google Sheets con tabla, filtros, trazabilidad, actualización de filas y enlaces a Drive.\n"
+        "- Consulta unificada por radicado, placa, empresa, NIT, cédula, ubicación física y fecha.\n"
+        "- Roles, permisos de descarga, auditoría, deduplicación y actualizador autorizado desde GitHub.\n"
+        "- Editor PDF local para unir, dividir, extraer, ordenar y rotar documentos."
     )
 
 with tab_capacitacion:
@@ -116,7 +121,7 @@ with tab_capacitacion:
         #### 3. Regla documental principal
         El año de Drive siempre sale de la fecha de creación de la petición. Un
         anexo puede llegar sin fecha propia: si el expediente existe, reutiliza la
-        fecha guardada; si todavía no existe, queda en `PDFS Escaneados/Pendientes`
+        fecha guardada; si todavía no existe, queda en `Peticion/Pendientes`
         identificado por radicado o placa.
 
         #### 4. Revisión de resultados
@@ -169,7 +174,7 @@ with tab_flujo:
         ("4. Validar", "El checklist muestra documentos presentes y faltantes."),
         ("5. Organizar", "Drive guarda por año o en Pendientes y genera el PDF unificado."),
         ("6. Sincronizar", "Sheets conserva los campos completos y sus enlaces."),
-        ("7. Consultar", "El expediente y los pendientes se buscan por radicado o placa."),
+        ("7. Consultar", "El expediente y los pendientes se buscan por radicado, placa, empresa, NIT, cédula, ubicación o fecha."),
     ]
     for title, description in pasos:
         st.markdown(
@@ -223,7 +228,7 @@ with tab_trabajo:
         "Integración de BD_DESV y DATOS con las 21 columnas reales.",
         "Preservación de datos históricos al anexar documentos.",
         "Instalador Windows con PyInstaller e Inno Setup.",
-        "Actualizador autorizado desde GitHub Raw y release 1.1.11.",
+        "Actualizador autorizado desde GitHub Raw y release 1.1.12.",
         "Pruebas de sintaxis, dependencias, servidor, ejecutable e instalador.",
         "Prueba real de Google Sheets: escritura, lectura, actualización y eliminación controlada.",
         "Corrección de escritura por fila exacta para evitar desplazamientos de columnas.",

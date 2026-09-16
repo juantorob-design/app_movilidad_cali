@@ -58,9 +58,10 @@ SUBIDA`, separadas del campo `FUNCIONARIO QUE DESVINCULA`.
 La estructura esperada es:
 
 ```text
-PDFS Escaneados/
+Peticion/
+  Pendientes/
   AÑO/
-    RADICADO_PLACA_FECHA_UBICACION/
+    RADICADO_PADRE_PLACA_FECHA_UBICACION/
       Solicitud/
       Recurso/
       Resolución/
@@ -68,7 +69,7 @@ PDFS Escaneados/
       Constancia de ejecutoria/
       Desistimiento/
       Otro/
-      RADICADO_PLACA_FECHA_Expediente-completo_UBICACION.pdf
+      RADICADO_PADRE_PLACA_FECHA.pdf
 ```
 
 Cada documento individual debe conservarse en su subcarpeta y también debe
