@@ -1,5 +1,5 @@
 {
   "version": "1.1.13",
-  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.13/SistemaDesvinculaciones-Setup-1.1.13.exe",
+  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.13/SistemaDesvinculaciones.exe",
   "changelog": "Versión de publicación: corrige la escritura en Google Sheets, conserva la hoja operativa tabla_2, evita sobreescrituras de registros y actualiza la validación del flujo de carga. Incluye OCR local de PDFs con caché y DirectML/CPU, separación documental, visor PDF, copias locales, barra de progreso, clasificación por expediente completo o complemento y organización por año en Drive."
 }
