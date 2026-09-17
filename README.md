@@ -43,14 +43,15 @@ final como `Otro`.
 
 Los complementos temporales usan la convención
 `NRO_PETICION_PLACA_DD_MM_AAAA_CAJA_FOLDER_CARPETA_RECURSO.pdf`. Al confirmar
-el registro se trasladan desde `Peticion/Pendientes` a `Peticion/AÑO` dentro de
-la carpeta del expediente, manteniendo sus subcarpetas por tipo documental.
+el registro se trasladan desde `Peticion/RADICADO_PLACA_DD_MM_AAAA` a
+`PDFS Escaneados/AÑO/RADICADO_PLACA_DD_MM_AAAA`, manteniendo sus subcarpetas
+por tipo documental.
 En la consulta del expediente se puede elegir entre el PDF completo unificado
 y un explorador individual de complementos.
 
 Los anexos pueden llegar sin fecha de petición. Si el expediente todavía no
-existe, se conservan en `PDFS Escaneados/Pendientes` y se pueden consultar por
-radicado o placa hasta que la petición principal permita reubicarlos y unirlos.
+existe, se conservan en la carpeta temporal de la petición y se pueden
+consultar por radicado o placa hasta confirmar los datos y unirlos.
 El checklist documental se calcula según el desenlace: sin recurso, con recurso
 o desistimiento.
 
@@ -106,6 +107,12 @@ La aplicación detecta Ollama en `http://127.0.0.1:11434` y muestra el botón
 con `SISTEMA_OLLAMA_URL` y `SISTEMA_OLLAMA_TIMEOUT`. Si Ollama no está
 disponible, el OCR, las reglas administrativas y el formulario siguen
 funcionando sin cambios.
+
+Si Ollama no está instalado, la pantalla muestra un botón para abrir la
+descarga oficial en `https://ollama.com/download`. La instalación continúa
+siendo explícita: la aplicación no ejecuta instaladores externos de forma
+silenciosa. Después de instalar Ollama, el botón de descarga del modelo ejecuta
+localmente `ollama pull qwen2.5:7b`.
 
 La aplicación no instala Ollama ni descarga modelos automáticamente en segundo
 plano. La preparación requiere una acción explícita del usuario. Las

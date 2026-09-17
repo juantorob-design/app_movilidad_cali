@@ -17,6 +17,7 @@ import requests
 OLLAMA_URL = os.environ.get("SISTEMA_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.environ.get("SISTEMA_OLLAMA_MODEL", "qwen2.5:7b")
 OLLAMA_TIMEOUT = int(os.environ.get("SISTEMA_OLLAMA_TIMEOUT", "180"))
+OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
 
 SYSTEM_PROMPT = """Eres el analista documental local del Sistema de Desvinculaciones.
 Analiza únicamente la evidencia recibida y no inventes datos. Respeta esta secuencia:

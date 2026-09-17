@@ -76,12 +76,14 @@ except (ImportError, ModuleNotFoundError):
 try:
     from local_ai_service import (
         OLLAMA_MODEL,
+        OLLAMA_DOWNLOAD_URL,
         analizar_expediente_local,
         analisis_a_markdown,
         ollama_disponible,
     )
 except ImportError:
     OLLAMA_MODEL = "qwen2.5:7b"
+    OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
     analizar_expediente_local = None
     analisis_a_markdown = None
     ollama_disponible = lambda: False
@@ -286,6 +288,17 @@ DRIVE_FOLDER_ID = os.environ.get(
     "1HQtfhjWv9M_PljH4mfP-qdke9d5nyGTF",
 ).strip()
 DRIVE_REQUEST_FOLDER_NAME = "Peticion"
+DRIVE_UNLINKED_FOLDER_NAME = "Por_vincular"
+SUBCARPETAS_DOCUMENTALES = (
+    "peticion",
+    "consulta",
+    "resolucion resuelve",
+    "citacion",
+    "notificacion",
+    "recurso",
+    "constancia de ejecutoria",
+    "remision",
+)
 SPREADSHEET_CONFIG_FILE = resolver_dato("sistema_spreadsheet_id.json")
 SPREADSHEET_ID = os.environ.get(
     "SISTEMA_SPREADSHEET_ID",
@@ -1288,19 +1301,34 @@ def buscar_o_crear_carpeta_drive(service, parent_id, folder_name):
         return None
 
 
+def buscar_carpeta_drive(service, parent_id, folder_name):
+    """Busca una carpeta hija sin crearla."""
+    if not service or not parent_id or not folder_name:
+        return None
+    try:
+        nombre = folder_name.replace("'", "''")
+        query = (
+            f"'{parent_id}' in parents and trashed = false "
+            "and mimeType = 'application/vnd.google-apps.folder' "
+            f"and name = '{nombre}'"
+        )
+        carpetas = service.files().list(
+            q=query,
+            fields="files(id,name,parents)",
+            pageSize=10,
+        ).execute().get("files", [])
+        return carpetas[0].get("id") if carpetas else None
+    except Exception as error:
+        st.warning(f"No fue posible buscar la carpeta de Drive '{folder_name}': {error}")
+        return None
+
+
 def carpeta_drive_para_fecha(service, fecha):
-    """Obtiene Google Drive/Peticion/AÑO para clasificar por fecha confirmada."""
+    """Obtiene Google Drive/PDFS Escaneados/AÑO para la fecha confirmada."""
     try:
         fecha_obj = datetime.date.fromisoformat(str(fecha or "").strip())
         anio = str(fecha_obj.year)
-        escaneados_id = buscar_o_crear_carpeta_drive(
-            service,
-            DRIVE_FOLDER_ID,
-            DRIVE_REQUEST_FOLDER_NAME,
-        )
-        if not escaneados_id:
-            return None
-        return buscar_o_crear_carpeta_drive(service, escaneados_id, anio)
+        return buscar_o_crear_carpeta_drive(service, DRIVE_FOLDER_ID, anio)
     except (TypeError, ValueError):
         st.error(
             "No se puede clasificar el documento en Drive porque la fecha de "
@@ -1310,21 +1338,20 @@ def carpeta_drive_para_fecha(service, fecha):
 
 
 def carpeta_drive_para_expediente(service, fecha, radicado, placa, ubicacion):
-    """Obtiene Peticion/AÑO/RADICADO_PLACA_FECHA_UBICACION."""
+    """Obtiene PDFS Escaneados/AÑO/RADICADO_PLACA_DD_MM_AAAA."""
     carpeta_anual_id = carpeta_drive_para_fecha(service, fecha)
     if not carpeta_anual_id:
         return None
-    nombre = nombre_carpeta_expediente(
+    nombre = nombre_carpeta_peticion(
         radicado,
         placa,
         fecha,
-        ubicacion,
     )
     return buscar_o_crear_carpeta_drive(service, carpeta_anual_id, nombre)
 
 
-def carpeta_drive_para_pendientes(service):
-    """Obtiene Peticion/Pendientes, usada como caché temporal de cargas."""
+def carpeta_drive_para_staging(service, radicado, placa, fecha):
+    """Obtiene Peticion/RADICADO_PLACA_FECHA para el staging temporal."""
     escaneados_id = buscar_o_crear_carpeta_drive(
         service,
         DRIVE_FOLDER_ID,
@@ -1332,21 +1359,180 @@ def carpeta_drive_para_pendientes(service):
     )
     if not escaneados_id:
         return None
-    return buscar_o_crear_carpeta_drive(service, escaneados_id, "Pendientes")
+    return buscar_o_crear_carpeta_drive(
+        service,
+        escaneados_id,
+        nombre_carpeta_peticion(radicado, placa, fecha),
+    )
 
+
+def carpeta_drive_para_complementos_sin_vincular(service, placa):
+    """Obtiene Peticion/Por_vincular/PLACA para anexos sin expediente padre."""
+    peticion_id = buscar_o_crear_carpeta_drive(
+        service,
+        DRIVE_FOLDER_ID,
+        DRIVE_REQUEST_FOLDER_NAME,
+    )
+    if not peticion_id:
+        return None
+    bandeja_id = buscar_o_crear_carpeta_drive(
+        service,
+        peticion_id,
+        DRIVE_UNLINKED_FOLDER_NAME,
+    )
+    if not bandeja_id:
+        return None
+    return buscar_o_crear_carpeta_drive(
+        service,
+        bandeja_id,
+        _token_nombre_documento(placa) or "PLACA_SIN_IDENTIFICAR",
+    )
+
+
+def fusionar_complementos_sin_vincular(service, placa, carpeta_expediente_id):
+    """Mueve complementos de Por_vincular a un expediente recién localizado."""
+    origen = buscar_carpeta_drive(
+        service,
+        buscar_carpeta_drive(
+            service,
+            DRIVE_FOLDER_ID,
+            DRIVE_REQUEST_FOLDER_NAME,
+        ),
+        DRIVE_UNLINKED_FOLDER_NAME,
+    )
+    origen = buscar_carpeta_drive(
+        service,
+        origen,
+        _token_nombre_documento(placa) or "PLACA_SIN_IDENTIFICAR",
+    ) if origen else None
+    if not origen or not carpeta_expediente_id:
+        return 0
+    movidos = 0
+    try:
+        elementos = service.files().list(
+            q=f"'{origen}' in parents and trashed = false",
+            fields="files(id,name,mimeType)",
+            pageSize=1000,
+        ).execute().get("files", [])
+        for elemento in elementos:
+            if elemento.get("mimeType") == "application/vnd.google-apps.folder":
+                destino = carpeta_drive_para_documento(
+                    service,
+                    carpeta_expediente_id,
+                    elemento.get("name", "Otro"),
+                )
+                fusionar_carpeta_drive(service, elemento.get("id"), destino)
+            else:
+                destino = carpeta_drive_para_documento(
+                    service,
+                    carpeta_expediente_id,
+                    "Otro",
+                )
+                if mover_archivo_drive(service, elemento.get("id"), destino):
+                    movidos += 1
+        if not elementos:
+            service.files().delete(fileId=origen).execute()
+    except Exception as error:
+        st.warning(
+            f"No fue posible reunificar complementos de {placa}: {error}"
+        )
+    return movidos
+
+def buscar_carpeta_expediente_drive(service, fecha, radicado, placa):
+    """Busca un expediente existente primero en Peticion y luego por año."""
+    if not service:
+        return None
+    nombre = nombre_carpeta_peticion(radicado, placa, fecha)
+    peticion_id = buscar_carpeta_drive(
+        service,
+        DRIVE_FOLDER_ID,
+        DRIVE_REQUEST_FOLDER_NAME,
+    )
+    if peticion_id:
+        encontrada = buscar_carpeta_drive(service, peticion_id, nombre)
+        if encontrada:
+            return encontrada
+        if placa:
+            coincidencias = service.files().list(
+                q=(
+                    f"'{peticion_id}' in parents and trashed = false "
+                    "and mimeType = 'application/vnd.google-apps.folder' "
+                    f"and name contains '{_token_nombre_documento(placa)}'"
+                ),
+                fields="files(id,name)",
+                pageSize=50,
+            ).execute().get("files", [])
+            if coincidencias:
+                return coincidencias[0].get("id")
+    try:
+        fecha_obj = datetime.date.fromisoformat(str(fecha or "").strip())
+    except (TypeError, ValueError):
+        return None
+    anual_id = buscar_carpeta_drive(
+        service,
+        DRIVE_FOLDER_ID,
+        str(fecha_obj.year),
+    )
+    if not anual_id:
+        return None
+    encontrada = buscar_carpeta_drive(service, anual_id, nombre)
+    if encontrada or not placa:
+        return encontrada
+    coincidencias = service.files().list(
+        q=(
+            f"'{anual_id}' in parents and trashed = false "
+            "and mimeType = 'application/vnd.google-apps.folder' "
+            f"and name contains '{_token_nombre_documento(placa)}'"
+        ),
+        fields="files(id,name)",
+        pageSize=50,
+    ).execute().get("files", [])
+    return coincidencias[0].get("id") if coincidencias else None
 
 def carpeta_drive_para_documento(service, carpeta_expediente_id, tipo_documento):
     """Obtiene una subcarpeta del expediente para cada tipo documental."""
-    nombre = re.sub(
-        r"[^A-Za-z0-9ÁÉÍÓÚáéíóúÑñÜü -]+",
-        "",
-        str(tipo_documento or "Otro"),
-    ).strip() or "Otro"
+    tipo = str(tipo_documento or "Otro").strip().casefold()
+    equivalencias = {
+        "solicitud": "peticion",
+        "petición": "peticion",
+        "consulta qx": "consulta",
+        "resolución": "resolucion resuelve",
+        "requerimiento": "resolucion resuelve",
+        "oficio de citación": "citacion",
+        "citación del recurso": "citacion",
+        "notificación": "notificacion",
+        "notificación personal": "notificacion",
+        "notificación por aviso": "notificacion",
+        "notificación por publicación web": "notificacion",
+        "notificación del recurso": "notificacion",
+        "recurso": "recurso",
+        "resolución del recurso": "recurso",
+        "constancia de ejecutoria": "constancia de ejecutoria",
+        "remisión a registro": "remision",
+    }
+    nombre = equivalencias.get(tipo, "Otro")
     return buscar_o_crear_carpeta_drive(
         service,
         carpeta_expediente_id,
         nombre,
     )
+
+
+def preparar_subcarpetas_documentales(service, carpeta_expediente_id):
+    """Crea las subcarpetas documentales estándar del expediente."""
+    creadas = {}
+    for nombre in SUBCARPETAS_DOCUMENTALES:
+        carpeta_id = buscar_o_crear_carpeta_drive(
+            service,
+            carpeta_expediente_id,
+            nombre,
+        )
+        if not carpeta_id:
+            raise RuntimeError(
+                f"No fue posible crear la subcarpeta documental '{nombre}'."
+            )
+        creadas[nombre] = carpeta_id
+    return creadas
 
 
 def nombre_complemento_peticion(
@@ -1359,7 +1545,7 @@ def nombre_complemento_peticion(
     recurso="",
     numero=1,
 ):
-    """Genera el nombre estándar de un complemento en Peticion/Pendientes."""
+    """Genera el nombre estándar de un complemento en la petición temporal."""
     try:
         fecha_obj = datetime.date.fromisoformat(str(fecha or "").strip())
         fecha_formateada = fecha_obj.strftime("%d_%m_%Y")
@@ -1417,22 +1603,37 @@ def preparar_carga_drive(
     fecha,
     tipo_fallback,
     carga_id,
+    es_complemento=False,
 ):
     """Sube de inmediato las partes detectadas; el PDF unificado se crea al guardar."""
     if not service:
         return [], None, "Google Drive no está autenticado."
     try:
-        # La fecha detectada por OCR no es definitiva. Mantener el staging en
-        # Pendientes evita crear expedientes en un año equivocado antes de que
-        # el usuario confirme el formulario.
-        pendientes = carpeta_drive_para_pendientes(service)
-        carpeta_expediente = buscar_o_crear_carpeta_drive(
+        if es_complemento and not buscar_carpeta_expediente_drive(
             service,
-            pendientes,
-            f"Carga-{radicado or carga_id}",
-        )
+            fecha,
+            radicado,
+            placa,
+        ):
+            carpeta_expediente = carpeta_drive_para_complementos_sin_vincular(
+                service,
+                placa,
+            )
+        elif not str(fecha or "").strip():
+            return [], None, (
+                "Completa la fecha de la petición para ubicar el documento "
+                "en la carpeta temporal del expediente."
+            )
+        else:
+            carpeta_expediente = buscar_carpeta_expediente_drive(
+                service,
+                fecha,
+                radicado,
+                placa,
+            ) or carpeta_drive_para_staging(service, radicado, placa, fecha)
         if not carpeta_expediente:
             return [], None, "No fue posible crear la carpeta de carga en Drive."
+        preparar_subcarpetas_documentales(service, carpeta_expediente)
 
         documentos = []
         for archivo in archivos:
@@ -1447,11 +1648,6 @@ def preparar_carga_drive(
                     carpeta_expediente,
                     tipo,
                 )
-                base = re.sub(
-                    r"[^A-Za-z0-9._-]+",
-                    "_",
-                    os.path.splitext(archivo.name)[0],
-                ).strip("_") or f"carga_{carga_id}"
                 nombre = nombre_complemento_peticion(
                     radicado,
                     placa,
@@ -1489,7 +1685,7 @@ def preparar_carga_drive(
                     "staged": True,
                 })
         return documentos, carpeta_expediente, None
-    except (OSError, ValueError, TypeError) as error:
+    except (OSError, ValueError, TypeError, RuntimeError) as error:
         return [], None, f"No fue posible preparar la carga en Drive: {error}"
 
 
@@ -1498,10 +1694,27 @@ def mover_archivo_drive(service, file_id, carpeta_destino_id):
     if not service or not file_id or not carpeta_destino_id:
         return False
     try:
-        actual = service.files().get(fileId=file_id, fields="parents").execute()
+        actual = service.files().get(
+            fileId=file_id,
+            fields="parents,name,md5Checksum",
+        ).execute()
         padres_lista = actual.get("parents", [])
         if carpeta_destino_id in padres_lista:
             return True
+        nombre = str(actual.get("name") or "").replace("'", "''")
+        md5 = actual.get("md5Checksum")
+        if nombre:
+            query = (
+                f"'{carpeta_destino_id}' in parents and trashed = false "
+                f"and name = '{nombre}'"
+            )
+            existentes = service.files().list(
+                q=query,
+                fields="files(id,md5Checksum)",
+                pageSize=10,
+            ).execute().get("files", [])
+            if any(md5 and item.get("md5Checksum") == md5 for item in existentes):
+                return True
         padres = ",".join(padres_lista)
         service.files().update(
             fileId=file_id,
@@ -1516,7 +1729,7 @@ def mover_archivo_drive(service, file_id, carpeta_destino_id):
 
 
 def mover_carpeta_drive(service, folder_id, carpeta_destino_id):
-    """Mueve una carpeta de Pendientes al año definitivo sin duplicar su contenido."""
+    """Mueve una carpeta de Peticion al año definitivo sin duplicar contenido."""
     return mover_archivo_drive(service, folder_id, carpeta_destino_id)
 
 
@@ -1542,7 +1755,7 @@ def fusionar_carpeta_drive(service, origen_id, destino_id):
     try:
         elementos = service.files().list(
             q=f"'{origen_id}' in parents and trashed = false",
-            fields="files(id,name,mimeType,parents)",
+            fields="files(id,name,mimeType,parents,md5Checksum)",
             pageSize=1000,
         ).execute().get("files", [])
         for elemento in elementos:
@@ -1566,10 +1779,14 @@ def fusionar_carpeta_drive(service, origen_id, destino_id):
                         f"'{destino_id}' in parents and trashed = false "
                         f"and name = '{nombre_escapado}'"
                     ),
-                    fields="files(id)",
+                    fields="files(id,md5Checksum)",
                     pageSize=2,
                 ).execute().get("files", [])
-                if existente:
+                if existente and any(
+                    elemento.get("md5Checksum")
+                    and item.get("md5Checksum") == elemento.get("md5Checksum")
+                    for item in existente
+                ):
                     service.files().delete(fileId=elemento.get("id")).execute()
                 elif not mover_archivo_drive(
                     service,
@@ -1900,6 +2117,49 @@ def buscar_expediente_local_por_coincidencias(expedientes, datos):
     return mejor if mejor_puntaje >= 2 else None
 
 
+def enrutar_documento_cargado(datos, es_complemento, drive_service=None):
+    """Determina la ruta del archivo antes de habilitar el guardado."""
+    datos = datos or {}
+    radicado = datos.get("radicado_padre", "")
+    placa = datos.get("placa", "")
+    fecha = datos.get("fecha_solicitud", "")
+    local = buscar_expediente_local_por_coincidencias(
+        st.session_state.get("db_expedientes", {}),
+        datos,
+    )
+    remoto = (
+        buscar_carpeta_expediente_drive(
+            drive_service,
+            fecha,
+            radicado,
+            placa,
+        )
+        if drive_service and fecha and radicado
+        else None
+    )
+    if local or remoto:
+        return {
+            "estado": "ACTUALIZADO_CON_COMPLEMENTO" if es_complemento else "EXPEDIENTE_EXISTENTE",
+            "carpeta_drive_id": remoto,
+            "expediente_local": local,
+        }
+    if es_complemento:
+        return {
+            "estado": "PENDIENTE_VINCULACION",
+            "carpeta_drive_id": (
+                carpeta_drive_para_complementos_sin_vincular(drive_service, placa)
+                if drive_service and placa
+                else None
+            ),
+            "expediente_local": None,
+        }
+    return {
+        "estado": "EXPEDIENTE_PRINCIPAL",
+        "carpeta_drive_id": None,
+        "expediente_local": None,
+    }
+
+
 def buscar_expedientes_local_consulta(expedientes, campo, criterio):
     """Busca expedientes locales por cualquiera de los campos consultables."""
     criterio = str(criterio or "").strip().upper()
@@ -1974,11 +2234,50 @@ def clave_expediente_consulta(expediente):
     )
 
 
+def ocr_respaldo_primera_pagina(contenido):
+    """Relee la primera página en escala de grises si faltan placa o fecha."""
+    if fitz is None or RapidOCR is None:
+        return ""
+    try:
+        documento = fitz.open(stream=contenido, filetype="pdf")
+        if not documento.page_count:
+            documento.close()
+            return ""
+        pixmap = documento.load_page(0).get_pixmap(
+            matrix=fitz.Matrix(1.8, 1.8),
+            colorspace=fitz.csGRAY,
+            alpha=False,
+        )
+        documento.close()
+        global _ocr_engine
+        if _ocr_engine is None:
+            _ocr_engine = crear_motor_ocr()
+        resultado, _ = _ocr_engine(pixmap.tobytes("png"))
+        return normalizar_texto_documento(
+            " ".join(str(elemento[1]) for elemento in (resultado or []))
+        )
+    except (OSError, RuntimeError, ValueError, TypeError) as error:
+        st.warning(f"No fue posible ejecutar el OCR de respaldo: {error}")
+        return ""
+
+
 def extraer_datos_pdf(contenido, texto=None):
     """Extrae metadatos de PDFs digitales; devuelve vacío si es un escaneo sin OCR."""
     texto = normalizar_errores_ocr(
         extraer_texto_pdf(contenido) if texto is None else texto
     )
+    patron_placa = r"\b[A-Z]{3}-?\d{3}\b"
+    patron_fecha = (
+        r"\b(?:0[1-9]|[12][0-9]|3[01])[-/]"
+        r"(?:0[1-9]|1[012])[-/](?:20\d{2})\b"
+    )
+    if (
+        not re.search(patron_placa, texto, flags=re.IGNORECASE)
+        or not re.search(patron_fecha, texto, flags=re.IGNORECASE)
+    ):
+        texto_respaldo = ocr_respaldo_primera_pagina(contenido)
+        if texto_respaldo:
+            texto = normalizar_errores_ocr(f"{texto} {texto_respaldo}")
     if not texto:
         return {}
     patrones = {
@@ -1988,6 +2287,7 @@ def extraer_datos_pdf(contenido, texto=None):
         ],
         "placa": [
             r"(?:placa|placas|matr[ií]cula|matricula|veh[ií]culo)\s*[:#\-]?\s*([A-Z]{3}\s*[-]?\s*\d{3})\b",
+            r"\b([A-Z]{3}-?\d{3})\b",
         ],
         "fecha_solicitud": [
             r"(?:fecha\s*(?:de\s*)?(?:creaci[oó]n|radicaci[oó]n|solicitud|recibido))\s*[:#\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
@@ -1996,6 +2296,7 @@ def extraer_datos_pdf(contenido, texto=None):
             r"abr(?:il)?|may(?:o)?|jun(?:io)?|jul(?:io)?|ago(?:sto)?|"
             r"sep(?:tiembre)?|set(?:iembre)?|oct(?:ubre)?|nov(?:iembre)?|"
             r"dic(?:iembre)?)\s+(?:de\s+)?20\d{2})\b",
+            r"\b((?:0[1-9]|[12][0-9]|3[01])[-/](?:0[1-9]|1[012])[-/](?:20\d{2}))\b",
         ],
         "fecha_radicacion": [
             r"(?:fecha\s+de\s+)?radicaci[oó]n\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
@@ -2534,18 +2835,52 @@ def nombre_carpeta_expediente(radicado, placa, fecha, ubicacion):
     return nombre or "RADICADO_PENDIENTE"
 
 
+def nombre_carpeta_peticion(radicado, placa, fecha):
+    """Genera la carpeta temporal con fecha visible en formato DD_MM_AAAA."""
+    try:
+        fecha_formateada = datetime.date.fromisoformat(
+            str(fecha or "").strip()
+        ).strftime("%d_%m_%Y")
+    except (TypeError, ValueError):
+        fecha_formateada = "FECHA_PENDIENTE"
+    partes = [
+        radicado or "RADICADO_PENDIENTE",
+        placa or "PLACA_PENDIENTE",
+    ]
+    return "_".join(
+        [_token_nombre_documento(parte) for parte in partes] + [fecha_formateada]
+    )
+
+
 def nombre_pdf_expediente(
     radicado,
     placa,
     fecha,
     tipo_caso=None,
+    caja="",
+    folder="",
+    carpeta="",
     extension=".pdf",
 ):
-    """Genera el nombre del PDF completo: RADICADO_PADRE_PLACA_FECHA."""
-    partes = [radicado, placa, fecha, tipo_caso]
+    """Genera el PDF raíz con radicado, ubicación y desenlace."""
+    try:
+        fecha_formateada = datetime.date.fromisoformat(
+            str(fecha or "").strip()
+        ).strftime("%d_%m_%Y")
+    except (TypeError, ValueError):
+        fecha_formateada = "FECHA_PENDIENTE"
+    valores = [
+        radicado,
+        placa,
+        caja,
+        folder,
+        carpeta,
+        tipo_caso or "SIN_RECURSO",
+    ]
     nombre = "_".join(
-        token for token in (_token_nombre_documento(parte) for parte in partes)
-        if token
+        [_token_nombre_documento(valor) for valor in valores[:2]]
+        + [fecha_formateada]
+        + [_token_nombre_documento(valor) for valor in valores[2:]]
     )
     return f"{nombre or 'EXPEDIENTE'}{extension.lower()}"
 
@@ -4392,6 +4727,21 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 " ".join(textos_analizados.values()),
                 " ".join(archivo.name for archivo in archivos_canvas),
             )
+            ruta_documento = enrutar_documento_cargado(
+                datos_carga,
+                es_complemento=not peticion_incluida,
+                drive_service=drive_service,
+            )
+            if ruta_documento["estado"] == "PENDIENTE_VINCULACION":
+                st.info(
+                    "El complemento se conservará en Por_vincular hasta localizar "
+                    "el expediente principal."
+                )
+            elif ruta_documento["estado"] == "ACTUALIZADO_CON_COMPLEMENTO":
+                st.success(
+                    "Se encontró el expediente principal. El complemento se "
+                    "integrará directamente en su subcarpeta documental."
+                )
             carga_staging = st.session_state.setdefault("_cargas_drive", {})
             if drive_service and carga_id not in carga_staging:
                 documentos_staged, carpeta_staged, error_staging = preparar_carga_drive(
@@ -4402,6 +4752,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     datos_carga.get("fecha_solicitud", ""),
                     tipo_documento,
                     carga_id,
+                    es_complemento=not peticion_incluida,
                 )
                 if error_staging:
                     st.warning(error_staging)
@@ -4409,6 +4760,11 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     carga_staging[carga_id] = {
                         "documentos": documentos_staged,
                         "drive_folder_id": carpeta_staged,
+                        "estado": (
+                            "PENDIENTE_VINCULACION"
+                            if not peticion_incluida
+                            else "EXPEDIENTE_PRINCIPAL"
+                        ),
                     }
                     st.success(
                         "Partes documentales subidas a Drive para continuar el análisis. "
@@ -4518,6 +4874,24 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     "IA local no disponible todavía. Instala Ollama, inicia su servicio "
                     f"y descarga el modelo `{OLLAMA_MODEL}` para habilitar este análisis."
                 )
+                if st.button(
+                    "Descargar e instalar Ollama",
+                    key=f"descargar_ollama_{carga_id}",
+                ):
+                    try:
+                        if not webbrowser.open(OLLAMA_DOWNLOAD_URL):
+                            raise RuntimeError(
+                                "Windows no pudo abrir el navegador para la descarga."
+                            )
+                        st.success(
+                            "Se abrió la descarga oficial de Ollama. "
+                            "Después de instalarlo, reinicia su servicio y vuelve a "
+                            "usar el botón de descarga del modelo."
+                        )
+                    except (OSError, RuntimeError) as error:
+                        st.error(
+                            f"No fue posible abrir la descarga de Ollama: {error}"
+                        )
             resultado_ia_guardado = st.session_state.get(f"analisis_ia_local_{carga_id}")
             if resultado_ia_guardado and analisis_a_markdown is not None:
                 with st.container(border=True):
@@ -4546,7 +4920,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     destino_texto = "Carpeta anual pendiente de confirmar la fecha de petición"
             else:
                 destino_texto = (
-                    "Peticion/Pendientes/ "
+                    "Peticion/ "
                     f"{destino_radicado or destino_placa or 'IDENTIFICADOR_PENDIENTE'}"
                 )
             vista_col, destino_col = st.columns([1.35, 1])
@@ -5013,11 +5387,10 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                     staged_folder_id,
                                     carpeta_anual_id,
                                 )
-                        nombre_expediente = nombre_carpeta_expediente(
+                        nombre_expediente = nombre_carpeta_peticion(
                             radicado_padre,
                             matricula_qx or placa_expediente,
                             str(fecha_registro_previa),
-                            ubicacion_registro,
                         )
                         renombrar_carpeta_drive(
                             drive_service,
@@ -5036,8 +5409,19 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             ubicacion_registro,
                         )
                     else:
-                        carpeta_expediente_drive_id = carpeta_drive_para_pendientes(
-                            drive_service
+                        carpeta_expediente_drive_id = carpeta_drive_para_staging(
+                            drive_service,
+                            radicado_padre,
+                            matricula_qx or placa_expediente,
+                            str(fecha_registro_previa or ""),
+                        )
+                    if carpeta_expediente_drive_id and (
+                        matricula_qx or placa_expediente
+                    ):
+                        fusionar_complementos_sin_vincular(
+                            drive_service,
+                            matricula_qx or placa_expediente,
+                            carpeta_expediente_drive_id,
                         )
                 staged_documentos = [
                     documento.copy()
@@ -5337,6 +5721,9 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                 matricula_qx,
                                 str(fecha_registro_previa),
                                 tipo_caso_detectado or tipo_caso,
+                                caja,
+                                folder,
+                                total_expedientes,
                             )
                             id_unificado, url_unificado = (None, None)
                             huella_unificado = huella_contenido(pdf_unificado)
@@ -5612,7 +5999,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         canvas_list
                     )
                     st.warning(
-                        "El documento quedó en la carpeta **Pendientes**. "
+                        "El documento quedó en la carpeta temporal de Peticion. "
                         "Cuando registres la petición con este radicado, "
                         "se podrá reubicar y unir al expediente."
                     )
@@ -5692,7 +6079,7 @@ elif st.session_state.navegacion == "Consulta & Archivo":
     pendientes = st.session_state.get("pendientes", {})
     total_pendientes = sum(len(documentos) for documentos in pendientes.values())
     with st.container(border=True):
-        st.subheader("Bandeja de PDF pendientes")
+        st.subheader("Bandeja de PDF por asociar")
         st.metric("PDF sin expediente completo", total_pendientes)
         st.caption(
             "Estos archivos conservan su radicado o placa y esperan la petición "
@@ -5709,7 +6096,7 @@ elif st.session_state.navegacion == "Consulta & Archivo":
                         else:
                             st.write(f"- {nombre}")
         else:
-            st.success("No hay PDF pendientes de asociación.")
+            st.success("No hay PDF por asociar.")
 
     tipo_busqueda = st.selectbox(
         "Buscar por",
@@ -6121,7 +6508,7 @@ elif st.session_state.navegacion == "Buzón de Mensajes":
                     guardar_local_json(st.session_state.db_expedientes)
                     st.rerun()
         pendientes = obtener_usuarios_pendientes()
-        st.subheader("Pendientes de aprobación")
+        st.subheader("Cuentas por aprobar")
         if pendientes:
             st.warning(f"Hay {len(pendientes)} cuenta(s) esperando activación.")
             for pendiente in pendientes:
@@ -6131,7 +6518,7 @@ elif st.session_state.navegacion == "Buzón de Mensajes":
                 )
             st.info("Abre Gestión de Permisos para asignar el rol y activar cada cuenta.")
         else:
-            st.success("No hay cuentas pendientes de aprobación.")
+            st.success("No hay cuentas por aprobar.")
         solicitudes = obtener_solicitudes_descarga()
         st.subheader("Solicitudes de descarga")
         if solicitudes:
