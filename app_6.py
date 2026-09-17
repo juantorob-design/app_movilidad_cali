@@ -262,12 +262,169 @@ DRIVE_FOLDER_ID = os.environ.get(
     "1HQtfhjWv9M_PljH4mfP-qdke9d5nyGTF",
 ).strip()
 DRIVE_REQUEST_FOLDER_NAME = "Peticion"
+SPREADSHEET_CONFIG_FILE = resolver_dato("sistema_spreadsheet_id.json")
 SPREADSHEET_ID = os.environ.get(
     "SISTEMA_SPREADSHEET_ID",
     "1oQ5GnxSj4_gGA-p2NjlN3o0uDOLaIELZu4gpohLK6Uo",
 ).strip()
-SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit"
+if not SPREADSHEET_ID:
+    try:
+        with open(SPREADSHEET_CONFIG_FILE, "r", encoding="utf-8") as archivo:
+            config = json.load(archivo)
+            SPREADSHEET_ID = str(config.get("spreadsheet_id", "")).strip()
+    except (OSError, ValueError, TypeError):
+        SPREADSHEET_ID = ""
+SHEET_URL = (
+    f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit"
+    if SPREADSHEET_ID
+    else "https://docs.google.com/spreadsheets/create"
+)
 HISTORICO_FILENAME = "BD_DESVINCULACIONES ADMINISTRATIVAS.xlsx"
+
+
+def guardar_spreadsheet_id(id_hoja):
+    if not id_hoja:
+        return
+    try:
+        os.makedirs(os.path.dirname(SPREADSHEET_CONFIG_FILE), exist_ok=True)
+        with open(SPREADSHEET_CONFIG_FILE, "w", encoding="utf-8") as archivo:
+            json.dump({"spreadsheet_id": id_hoja}, archivo, ensure_ascii=False, indent=2)
+        os.environ["SISTEMA_SPREADSHEET_ID"] = id_hoja
+    except OSError:
+        pass
+
+
+def obtener_hoja_registro(service, spreadsheet_id=None):
+    """Devuelve la hoja operacional activa; prioriza tabla_2 y crea una si no existe."""
+    if not service:
+        return "tabla_2"
+    target_id = spreadsheet_id or SPREADSHEET_ID
+    if not target_id:
+        return "tabla_2"
+    try:
+        metadata = service.spreadsheets().get(
+            spreadsheetId=target_id,
+            fields="sheets(properties(sheetId,title))",
+        ).execute()
+        hojas = metadata.get("sheets", [])
+        nombres = {
+            hoja.get("properties", {}).get("title", "").strip().lower():
+            hoja.get("properties", {}).get("title", "").strip()
+            for hoja in hojas
+            if hoja.get("properties", {}).get("title", "").strip()
+        }
+        if "tabla_2" in nombres:
+            return nombres["tabla_2"]
+        if "bd_desv" in nombres:
+            return nombres["bd_desv"]
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=target_id,
+            body={
+                "requests": [{
+                    "addSheet": {
+                        "properties": {
+                            "title": "tabla_2",
+                            "gridProperties": {"frozenRowCount": 1},
+                        }
+                    }
+                }]
+            },
+        ).execute()
+        return "tabla_2"
+    except Exception:
+        return "tabla_2"
+
+
+def rango_hoja_registro(service, columnas="A:Z", spreadsheet_id=None):
+    nombre_hoja = obtener_hoja_registro(service, spreadsheet_id)
+    titulo_seguro = nombre_hoja.replace("'", "''")
+    return f"'{titulo_seguro}'!{columnas}"
+
+
+def asegurador_registro_hoja(service, spreadsheet_id=None):
+    if not service:
+        return False
+    target_id = spreadsheet_id or SPREADSHEET_ID
+    if not target_id:
+        return False
+    try:
+        hoja_bd = obtener_hoja_registro(service, target_id)
+        rango = rango_hoja_registro(service, "A1:AZ1", target_id)
+        valores = service.spreadsheets().values().get(
+            spreadsheetId=target_id,
+            range=rango,
+        ).execute().get("values", [])
+        if valores and any(str(celda).strip() for celda in valores[0]):
+            encabezados = [normalizar_campo_sheet(valor) for valor in valores[0]]
+            if any(clave in encabezados for clave in ("FECHASOLICITUD", "PLACA", "RADPADRE")):
+                return True
+        service.spreadsheets().values().update(
+            spreadsheetId=target_id,
+            range=rango,
+            valueInputOption="USER_ENTERED",
+            body={"values": [COLUMNAS_SHEET_OFICIALES]},
+        ).execute()
+        return True
+    except Exception:
+        return False
+
+
+def asegurar_hoja_bd_desv(service):
+    """Asegura la hoja operativa del sistema; usa tabla_2 cuando existe y crea la hoja si hace falta."""
+    global SPREADSHEET_ID, SHEET_URL
+    if not service:
+        return SPREADSHEET_ID or None
+    try:
+        if SPREADSHEET_ID:
+            try:
+                service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID, fields="spreadsheetId").execute()
+                SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit"
+                if asegurador_registro_hoja(service, SPREADSHEET_ID):
+                    return SPREADSHEET_ID
+            except Exception:
+                SPREADSHEET_ID = ""
+        resultados = service.files().list(
+            q="mimeType='application/vnd.google-apps.spreadsheet' and trashed = false and name contains 'BD_DESVINCULACIONES ADMINISTRATIVAS'",
+            fields="files(id,name)",
+            pageSize=20,
+        ).execute().get("files", [])
+        if resultados:
+            SPREADSHEET_ID = resultados[0].get("id")
+            guardar_spreadsheet_id(SPREADSHEET_ID)
+            SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit"
+            asegurador_registro_hoja(service, SPREADSHEET_ID)
+            return SPREADSHEET_ID
+        nueva = service.spreadsheets().create(
+            body={
+                "properties": {
+                    "title": "BD_DESVINCULACIONES ADMINISTRATIVAS",
+                    "locale": "es_CO",
+                    "timeZone": "America/Bogota",
+                },
+                "sheets": [{
+                    "properties": {
+                        "sheetId": 0,
+                        "title": "tabla_2",
+                        "gridProperties": {"frozenRowCount": 1},
+                    }
+                }],
+            },
+            fields="spreadsheetId,sheets(properties(sheetId,title))",
+        ).execute()
+        SPREADSHEET_ID = nueva.get("spreadsheetId")
+        if SPREADSHEET_ID:
+            guardar_spreadsheet_id(SPREADSHEET_ID)
+            SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit"
+            asegurador_registro_hoja(service, SPREADSHEET_ID)
+        return SPREADSHEET_ID
+    except Exception as error:
+        st.warning(f"No fue posible asegurar la hoja principal de Google Sheets: {error}")
+        return SPREADSHEET_ID or None
+
+
+# Actualiza la URL del navegador con el ID real de la hoja activa.
+if SPREADSHEET_ID:
+    SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit"
 
 # ARCHIVOS OFICIALES DEL PROYECTO
 LOCAL_DB_FILE = resolver_dato("database_local.json")
@@ -311,24 +468,62 @@ TIPOS_DOCUMENTALES = [
     "Tarjeta de propiedad",
     "Certificado o soporte",
     "Resolución",
+    "Requerimiento",
+    "Oficio de citación",
     "Notificación",
+    "Notificación personal",
+    "Notificación por aviso",
+    "Notificación por publicación web",
     "Constancia de ejecutoria",
     "Recurso",
-    "Desistimiento",
+    "Resolución del recurso",
     "Remisión a registro",
+    "Desistimiento",
     "Otro",
 ]
 TIPOS_CASO = ["Detección automática", "Con recurso", "Sin recurso", "Desistimiento"]
 DOCUMENTOS_REQUERIDOS_POR_CASO = {
-    "Con recurso": {"Solicitud", "Resolución", "Notificación", "Recurso"},
-    "Sin recurso": {"Solicitud", "Resolución", "Notificación", "Constancia de ejecutoria"},
-    "Desistimiento": {"Solicitud", "Desistimiento"},
+    "Con recurso": {
+        "Solicitud",
+        "Consulta QX",
+        "Resolución",
+        "Oficio de citación",
+        "Notificación",
+        "Recurso",
+        "Resolución del recurso",
+        "Constancia de ejecutoria",
+    },
+    "Sin recurso": {
+        "Solicitud",
+        "Consulta QX",
+        "Resolución",
+        "Oficio de citación",
+        "Notificación",
+        "Constancia de ejecutoria",
+    },
+    "Desistimiento": {"Solicitud", "Consulta QX", "Desistimiento"},
 }
 
 DOCUMENTOS_BASE_POR_CASO = {
-    "Con recurso": ("Solicitud", "Resolución", "Notificación", "Recurso"),
-    "Sin recurso": ("Solicitud", "Resolución", "Notificación", "Constancia de ejecutoria"),
-    "Desistimiento": ("Solicitud", "Desistimiento"),
+    "Con recurso": (
+        "Solicitud",
+        "Consulta QX",
+        "Resolución",
+        "Oficio de citación",
+        "Notificación",
+        "Recurso",
+        "Resolución del recurso",
+        "Constancia de ejecutoria",
+    ),
+    "Sin recurso": (
+        "Solicitud",
+        "Consulta QX",
+        "Resolución",
+        "Oficio de citación",
+        "Notificación",
+        "Constancia de ejecutoria",
+    ),
+    "Desistimiento": ("Solicitud", "Consulta QX", "Desistimiento"),
 }
 
 
@@ -977,7 +1172,9 @@ def get_sheets_service():
     if not creds:
         return None
     try:
-        return build("sheets", "v4", credentials=creds)
+        service = build("sheets", "v4", credentials=creds)
+        asegurar_hoja_bd_desv(service)
+        return service
     except Exception as e:
         st.error(f"Error al conectar con Google Sheets API: {e}")
         return None
@@ -2081,10 +2278,20 @@ def clasificar_tipo_documento(texto, tipo_fallback):
             (9, r"\bpor\s+la\s+cual\b.*\bdesvincul"),
             (3, r"\bresoluci[oó]n\b|\bresolucion\b|acto\s+administrativo|resuelve"),
         ],
-        "Notificación": [
-            (15, r"citaci[oó]n|citacion\s+para\s+notificaci[oó]n|notificarse\s+personalmente"),
-            (12, r"\bnotificaci[oó]n\b|\bnotificacion\b"),
-            (3, r"\bnotificaci[oó]n\b|\bnotificacion\b|\bcitado\b|\baviso\b"),
+        "Requerimiento": [
+            (8, r"\brequerimient[oó]\b|\brequerimiento\b|requerido\s+para|requerir"),
+        ],
+        "Notificación personal": [
+            (12, r"notificaci[oó]n\s+personal|notificacion\s+personal|personalmente\s+notificado"),
+        ],
+        "Notificación por aviso": [
+            (10, r"notificaci[oó]n\s+por\s+aviso|notificacion\s+por\s+aviso|aviso\s+de\s+notificaci"),
+        ],
+        "Notificación por publicación web": [
+            (10, r"notificaci[oó]n\s+por\s+publicaci[oó]n\s+web|notificacion\s+por\s+publicacion\s+web|publicaci[oó]n\s+web"),
+        ],
+        "Oficio de citación": [
+            (8, r"oficio\s+de\s+citaci[oó]n|citacion\s+de\s+la\s+empresa|citacion\s+al\s+propietario|oficio\s+de\s+citado"),
         ],
         "Constancia de ejecutoria": [
             (10, r"constancia\s+de\s+ejecutoria"),
@@ -2094,6 +2301,12 @@ def clasificar_tipo_documento(texto, tipo_fallback):
             (10, r"recurso\s+de\s+(?:reposici[oó]n|apelaci[oó]n)"),
             (8, r"interpuso\s+(?:un\s+)?recurso|present[oó]\s+(?:un\s+)?recurso"),
             (3, r"\brecurso\b|impugn"),
+        ],
+        "Resolución del recurso": [
+            (10, r"resoluci[oó]n\s+del\s+recurso|resolucion\s+del\s+recurso|recurso\s+resuelto"),
+        ],
+        "Consulta QX": [
+            (12, r"consulta\s+de\s+verificaci[oó]n\s+de\s+propiedad|consulta\s+de\s+propiedad|verificaci[oó]n\s+de\s+propiedad|consulta\s+qx|verificaci[oó]n\s+qx"),
         ],
         "Solicitud": [
             (10, r"derecho\s+de\s+petici[oó]n|derecho\s+de\s+peticion|solicitud\s+de\s+desvinculaci[oó]n"),
@@ -2120,9 +2333,16 @@ def tipos_documentales_detectados(texto, tipo_fallback):
     reglas = [
         ("Desistimiento", r"desistim|desiste"),
         ("Recurso", r"\brecurso\b|reposici[oó]n|reposicion|apelaci[oó]n|apelacion|impugn"),
+        ("Resolución del recurso", r"resoluci[oó]n\s+del\s+recurso|resolucion\s+del\s+recurso|recurso\s+resuelto"),
         ("Resolución", r"\bresoluci[oó]n\b|\bresolucion\b|acto\s+administrativo|resuelve"),
+        ("Requerimiento", r"requerimient[oó]|requerimiento"),
+        ("Oficio de citación", r"oficio\s+de\s+citaci[oó]n|citaci[oó]n\s+al\s+propietario|citaci[oó]n\s+de\s+la\s+empresa|citacion\s+al\s+propietario"),
+        ("Notificación personal", r"notificaci[oó]n\s+personal|notificacion\s+personal|personalmente\s+notificado"),
+        ("Notificación por aviso", r"notificaci[oó]n\s+por\s+aviso|notificacion\s+por\s+aviso|aviso\s+de\s+notificaci"),
+        ("Notificación por publicación web", r"notificaci[oó]n\s+por\s+publicaci[oó]n\s+web|notificacion\s+por\s+publicacion\s+web|publicaci[oó]n\s+web"),
         ("Notificación", r"notificaci[oó]n|notificacion|c[ií]taci[oó]n|citacion|citado|aviso|publicaci[oó]n"),
         ("Constancia de ejecutoria", r"ejecutoria|firmeza|constancia.*firme"),
+        ("Consulta QX", r"consulta\s+de\s+verificaci[oó]n\s+de\s+propiedad|consulta\s+de\s+propiedad|verificaci[oó]n\s+de\s+propiedad|consulta\s+qx|verificaci[oó]n\s+qx"),
         ("Solicitud", r"derecho de petici[oó]n|derecho de peticion|solicito|solicitud|petici[oó]n|peticion"),
     ]
     detectados = {
@@ -2173,25 +2393,26 @@ def nombre_pdf_expediente(radicado, placa, fecha, extension=".pdf"):
 
 
 def clasificar_tipo_caso(texto="", nombre=""):
-    """Identifica uno de los tres desenlaces válidos del expediente."""
+    """Identifica el desenlace válido del expediente según el flujo administrativo."""
     evidencia = normalizar_errores_ocr(f"{nombre} {texto}").lower()
     if re.search(r"desistim|desestimiento|desistimiento|desiste", evidencia):
         return "Desistimiento"
     if re.search(
-        r"\bsin\s+recurso\b|no\s+interpuso\s+(?:un\s+)?recurso|"
-        r"sin\s+interponer\s+(?:el\s+)?recurso|"
-        r"\bno\s+present[oó]\s+(?:el\s+|un\s+)?recurso\b|"
-        r"\bno\s+se\s+present[oó]\s+recurso\b",
-        evidencia,
-    ):
-        return "Sin recurso"
-    if re.search(
         r"\bcon\s+recurso\b|\brecurso\s+de\s+reposici[oó]n\b|"
         r"\binterpuso\s+(?:un\s+)?recurso\b|\bpresent[oó]\s+(?:un\s+)?recurso\b|"
-        r"\bse\s+resuelve\s+el\s+recurso\b",
+        r"\bse\s+resuelve\s+el\s+recurso\b|\bresoluci[oó]n\s+del\s+recurso\b",
         evidencia,
     ):
         return "Con recurso"
+    if re.search(
+        r"\bsin\s+recurso\b|no\s+interpuso\s+(?:un\s+)?recurso|"
+        r"sin\s+interponer\s+(?:el\s+)?recurso|"
+        r"\bno\s+present[oó]\s+(?:el\s+|un\s+)?recurso\b|"
+        r"\bno\s+se\s+present[oó]\s+recurso\b|"
+        r"\bconstancia\s+de\s+ejecutoria\b",
+        evidencia,
+    ):
+        return "Sin recurso"
     return None
 
 
@@ -2287,17 +2508,10 @@ def leer_documento_local(documento):
     return None
 
 def obtener_rango_primera_hoja(service, columnas="A:Z"):
-    metadata = service.spreadsheets().get(
-        spreadsheetId=SPREADSHEET_ID,
-        fields="sheets.properties.title",
-    ).execute()
-    hojas = metadata.get("sheets", [])
-    if not hojas:
-        raise ValueError("El archivo de Google Sheets no contiene pestañas.")
-    titulo = hojas[0].get("properties", {}).get("title", "").strip()
-    if not titulo:
+    nombre_hoja = obtener_hoja_registro(service, SPREADSHEET_ID)
+    if not nombre_hoja:
         raise ValueError("No se pudo identificar la pestaña de Google Sheets.")
-    titulo_seguro = titulo.replace("'", "''")
+    titulo_seguro = nombre_hoja.replace("'", "''")
     return f"'{titulo_seguro}'!{columnas}"
 
 
@@ -2306,36 +2520,42 @@ def normalizar_campo_sheet(valor):
     texto = "".join(caracter for caracter in texto if not unicodedata.combining(caracter))
     # Algunas copias históricas tienen letras acentuadas dañadas como �.
     texto = texto.replace("�", "O")
-    return re.sub(r"\s+", " ", texto).strip().upper()
+    texto = texto.replace("_", " ")
+    texto = re.sub(r"[^A-Z0-9 ]", " ", texto.upper())
+    return re.sub(r"\s+", " ", texto).strip()
+
+
+def clave_campo_sheet(valor):
+    return re.sub(r"\s+", "", normalizar_campo_sheet(valor))
 
 
 COLUMNAS_SHEET_OFICIALES = [
-    "FECHA",
+    "FECHA SOLICITUD",
     "PLACA",
     "EMPRESA",
     "NIT",
-    "DIRECCIÓN",
+    "DIRECCION EMPRESA",
     "PROPIETARIO",
     "CEDULA",
-    "DIRECCIÓN",
+    "DIRECCION PROPIETARIO",
     "RAD PADRE",
-    "FECHA RAD-",
-    "RESOLUCIÓN DESVINCULACIÓN",
-    "FECHA DESVINCULACIÓN",
-    "OBSERVACIÓN",
+    "FECHA RADICACION",
+    "RESOLUCION DESVINCULACION",
+    "FECHA DESVINCULACION",
+    "OBSERVACION",
     "FUNCIONARIO QUE DESVINCULA",
     "NUEVA EMPRESA",
     "SOLICITANTE",
     "ESTADO",
-    "CORREO ELECTRÓNICO",
+    "CORREO ELECTRONICO",
     "RECURSO",
     "FECHA RECURSO",
     "OBSERVACIONES",
     "TIPO CASO",
-    "TIPO NOTIFICACIÓN",
-    "FECHA NOTIFICACIÓN",
+    "TIPO NOTIFICACION",
+    "FECHA NOTIFICACION",
     "FECHA EJECUTORIA",
-    "FECHA REMISIÓN REGISTRO",
+    "FECHA REMISION REGISTRO",
     "QX VERIFICADO",
     "ID EXPEDIENTE",
     "UBICACION FISICA",
@@ -2354,6 +2574,34 @@ COLUMNAS_SHEET_OFICIALES = [
     "DOCUMENTOS FALTANTES",
     "CONTENIDO DOCUMENTAL",
 ]
+
+
+ALIASES_COLUMNAS_SHEET = {
+    "FECHA": "fecha_solicitud",
+    "FECHASOLICITUD": "fecha_solicitud",
+    "RADPADRE": "radicado_padre",
+    "RADICADOPADRE": "radicado_padre",
+    "DIRECCIONEMPRESA": "direccion_empresa",
+    "DIRECCIONPROPIETARIO": "direccion_propietario",
+    "RESOLUCIONDESVINCULACION": "resolucion",
+    "RESOLUCION": "resolucion",
+    "FECHADESVINCULACION": "fecha_resolucion",
+    "FECHARECURSO": "fecha_recurso",
+    "TIPOCASO": "tipo_caso",
+    "TIPONOTIFICACION": "tipo_notificacion",
+    "FECHANOTIFICACION": "fecha_notificacion",
+    "FECHAEJECUTORIA": "fecha_ejecutoria",
+    "FECHAREMISIONREGISTRO": "fecha_remision_registro",
+    "QXVERIFICADO": "qx_verificado",
+    "UBICACIONFISICA": "ubicacion",
+    "FECHAULTIMAMODIFICACION": "ultima_modificacion",
+    "ACCESODIGITAL": "drive_folder",
+    "DRIVEFOLDER": "drive_folder",
+    "DOCUMENTOSDRIVE": "documentos_drive",
+    "PDFUNIFICADO": "pdf_unificado",
+    "DOCUMENTOSFALTANTES": "documentos_faltantes_drive",
+    "CONTENIDODOCUMENTAL": "contenido_documental",
+}
 
 
 def letra_columna(numero):
@@ -2380,25 +2628,39 @@ def buscar_registro_en_sheets(
         if not filas:
             return None
         encabezados = [normalizar_campo_sheet(valor) for valor in filas[0]]
-        indice_rad = next(
-            (i for i, valor in enumerate(encabezados) if valor == "RAD PADRE"),
-            None,
-        )
-        indice_placa = next(
-            (i for i, valor in enumerate(encabezados) if valor == "PLACA"),
-            None,
-        )
-        indice_fecha = next(
-            (
-                i for i, valor in enumerate(encabezados)
-                if valor in {"FECHA", "FECHA SOLICITUD", "FECHA_SOLICITUD"}
-            ),
-            None,
-        )
         indices = {
-            "empresa": next((i for i, valor in enumerate(encabezados) if valor == "EMPRESA"), None),
-            "nit": next((i for i, valor in enumerate(encabezados) if valor == "NIT"), None),
-            "cedula": next((i for i, valor in enumerate(encabezados) if valor == "CEDULA"), None),
+            "radicado": next(
+                (
+                    i
+                    for i, valor in enumerate(encabezados)
+                    if clave_campo_sheet(valor) in {"RADPADRE", "RADICADOPADRE"}
+                ),
+                None,
+            ),
+            "placa": next(
+                (i for i, valor in enumerate(encabezados) if clave_campo_sheet(valor) == "PLACA"),
+                None,
+            ),
+            "fecha": next(
+                (
+                    i
+                    for i, valor in enumerate(encabezados)
+                    if clave_campo_sheet(valor) in {"FECHA", "FECHASOLICITUD"}
+                ),
+                None,
+            ),
+            "empresa": next(
+                (i for i, valor in enumerate(encabezados) if clave_campo_sheet(valor) == "EMPRESA"),
+                None,
+            ),
+            "nit": next(
+                (i for i, valor in enumerate(encabezados) if clave_campo_sheet(valor) == "NIT"),
+                None,
+            ),
+            "cedula": next(
+                (i for i, valor in enumerate(encabezados) if clave_campo_sheet(valor) == "CEDULA"),
+                None,
+            ),
         }
         buscados = {
             "radicado": normalizar_identificador(radicado),
@@ -2408,11 +2670,6 @@ def buscar_registro_en_sheets(
             "nit": normalizar_identificador(nit),
             "cedula": normalizar_identificador(cedula),
         }
-        indices.update({
-            "radicado": indice_rad,
-            "placa": indice_placa,
-            "fecha": indice_fecha,
-        })
         mejor_coincidencia = None
         mejor_puntaje = 0
         for numero, fila in enumerate(filas[1:], start=2):
@@ -2444,66 +2701,19 @@ def datos_registro_sheet(registro_sheet):
         return {}
     fila = registro_sheet["fila"]
     datos = {}
-    mapa = {
-        "FECHA": "fecha_solicitud",
-        "FECHA SOLICITUD": "fecha_solicitud",
-        "FECHA_SOLICITUD": "fecha_solicitud",
-        "PLACA": "placa",
-        "RAD PADRE": "radicado_padre",
-        "EMPRESA": "empresa",
-        "NIT": "nit",
-        "DIRECCION": "direccion_empresa",
-        "PROPIETARIO": "propietario",
-        "CEDULA": "cedula",
-        "FECHA RAD-": "fecha_radicacion",
-        "RESOLUCN DESVINCULACN": "resolucion",
-        "FECHA DESVINCULACION": "fecha_resolucion",
-        "FECHA DESVINCULACN": "fecha_resolucion",
-        "RESOLUCION": "resolucion",
-        "RESOLUCION DESVINCULACION": "resolucion",
-        "OBSERVACION": "observacion",
-        "FUNCIONARIO QUE DESVINCULA": "funcionario",
-        "NUEVA EMPRESA": "nueva_empresa",
-        "SOLICITANTE": "solicitante",
-        "ESTADO": "estado",
-        "CORREO ELECTRONICO": "correo",
-        "RECURSO": "recurso",
-        "FECHA RECURSO": "fecha_recurso",
-        "OBSERVACIONES": "notas",
-        "TIPO CASO": "tipo_caso",
-        "TIPO NOTIFICACION": "tipo_notificacion",
-        "FECHA NOTIFICACION": "fecha_notificacion",
-        "FECHA EJECUTORIA": "fecha_ejecutoria",
-        "FECHA REMISION REGISTRO": "fecha_remision_registro",
-        "QX VERIFICADO": "qx_verificado",
-        "ID EXPEDIENTE": "id",
-        "UBICACION FISICA": "ubicacion",
-        "CAJA": "caja",
-        "FOLDER": "folder",
-        "CARPETA": "carpeta",
-        "FOLIACION": "foliacion",
-        "FECHA ULTIMA MODIFICACION": "ultima_modificacion",
-        "SUBIDO POR": "subido_por",
-        "CORREO SUBIDA": "correo_subida",
-        "CARGO SUBIDA": "cargo_subida",
-        "ACCESO DIGITAL": "drive_folder",
-        "DRIVE FOLDER": "drive_folder",
-        "DOCUMENTOS DRIVE": "documentos_drive",
-        "PDF UNIFICADO": "pdf_unificado",
-        "DOCUMENTOS FALTANTES": "documentos_faltantes_drive",
-        "CONTENIDO DOCUMENTAL": "contenido_documental",
-    }
     indice_direccion = 0
     for indice, encabezado in enumerate(registro_sheet["encabezados"]):
-        if encabezado == "DIRECCION":
+        clave = clave_campo_sheet(encabezado)
+        campo = ALIASES_COLUMNAS_SHEET.get(clave)
+        if clave in {"DIRECCIONEMPRESA", "DIRECCIONPROPIETARIO"}:
             campo = (
                 "direccion_empresa"
-                if indice_direccion == 0
+                if clave == "DIRECCIONEMPRESA"
                 else "direccion_propietario"
             )
+        if not campo and clave == "DIRECCION":
+            campo = "direccion_empresa" if indice_direccion == 0 else "direccion_propietario"
             indice_direccion += 1
-        else:
-            campo = mapa.get(encabezado)
         if campo and indice < len(fila) and str(fila[indice]).strip():
             valor = str(fila[indice]).strip()
             if campo == "qx_verificado":
@@ -2550,31 +2760,30 @@ def resumen_documentos_drive(registro_datos):
 
 def valores_registro_para_sheet(registro_datos, columnas_drive):
     valores = {
+        "FECHA SOLICITUD": registro_datos.get("fecha_solicitud", ""),
         "FECHA": registro_datos.get("fecha_solicitud", ""),
-        "FECHA_SOLICITUD": registro_datos.get("fecha_solicitud", ""),
         "PLACA": registro_datos.get("placa", ""),
         "EMPRESA": registro_datos.get("empresa", ""),
         "NIT": registro_datos.get("nit", ""),
+        "DIRECCION EMPRESA": registro_datos.get("direccion_empresa", ""),
         "DIRECCION": registro_datos.get("direccion_empresa", ""),
         "PROPIETARIO": registro_datos.get("propietario", ""),
         "CEDULA": registro_datos.get("cedula", ""),
+        "DIRECCION PROPIETARIO": registro_datos.get("direccion_propietario", ""),
         "RAD PADRE": registro_datos.get("radicado_padre", ""),
-        "RADICADO_PADRE": registro_datos.get("radicado_padre", ""),
+        "RADICADO PADRE": registro_datos.get("radicado_padre", ""),
+        "FECHA RADICACION": registro_datos.get("fecha_radicacion", ""),
         "FECHA RAD-": registro_datos.get("fecha_radicacion", ""),
-        "FECHA_RADICACION": registro_datos.get("fecha_radicacion", ""),
-        "RESOLUCN DESVINCULACN": registro_datos.get("resolucion", ""),
         "RESOLUCION DESVINCULACION": registro_datos.get("resolucion", ""),
         "RESOLUCION": registro_datos.get("resolucion", ""),
-        "FECHA DESVINCULACN": registro_datos.get("fecha_resolucion", ""),
         "FECHA DESVINCULACION": registro_datos.get("fecha_resolucion", ""),
-        "FECHA_DESVINCULACION": registro_datos.get("fecha_resolucion", ""),
+        "FECHA DESVINCULACN": registro_datos.get("fecha_resolucion", ""),
         "OBSERVACION": registro_datos.get("observacion", ""),
         "FUNCIONARIO QUE DESVINCULA": registro_datos.get("funcionario", ""),
         "NUEVA EMPRESA": registro_datos.get("nueva_empresa", ""),
         "SOLICITANTE": registro_datos.get("solicitante", ""),
         "ESTADO": registro_datos.get("estado", ""),
         "CORREO ELECTRONICO": registro_datos.get("correo", ""),
-        "CORREO_ELECTRONICO": registro_datos.get("correo", ""),
         "RECURSO": registro_datos.get("recurso", ""),
         "FECHA RECURSO": registro_datos.get("fecha_recurso", ""),
         "OBSERVACIONES": registro_datos.get("notas", ""),
@@ -2595,6 +2804,7 @@ def valores_registro_para_sheet(registro_datos, columnas_drive):
         "CORREO SUBIDA": registro_datos.get("correo_subida", ""),
         "CARGO SUBIDA": registro_datos.get("cargo_subida", ""),
         "ACCESO DIGITAL": registro_datos.get("drive_folder", ""),
+        "DRIVE FOLDER": registro_datos.get("drive_folder", ""),
     }
     valores.update(columnas_drive)
     return valores
@@ -2608,16 +2818,25 @@ def fila_registro_para_sheet(encabezados, registro_datos, fila_anterior=None):
     for indice, encabezado in enumerate(encabezados):
         while len(fila) <= indice:
             fila.append("")
-        clave = normalizar_campo_sheet(encabezado)
-        if clave == "DIRECCION":
-            valor = (
-                registro_datos.get("direccion_empresa", "")
-                if indice_direccion == 0
-                else registro_datos.get("direccion_propietario", "")
-            )
-            indice_direccion += 1
+        clave = clave_campo_sheet(encabezado)
+        if clave in {"DIRECCION", "DIRECCIONEMPRESA", "DIRECCIONPROPIETARIO"}:
+            if clave == "DIRECCIONPROPIETARIO":
+                valor = registro_datos.get("direccion_propietario", "")
+            elif clave == "DIRECCIONEMPRESA":
+                valor = registro_datos.get("direccion_empresa", "")
+            else:
+                valor = (
+                    registro_datos.get("direccion_empresa", "")
+                    if indice_direccion == 0
+                    else registro_datos.get("direccion_propietario", "")
+                )
+                indice_direccion += 1
         else:
-            valor = valores.get(clave, "")
+            valor = valores.get(normalizar_campo_sheet(encabezado), "")
+            if not valor:
+                valor = valores.get(encabezado, "")
+                if not valor:
+                    valor = valores.get(ALIASES_COLUMNAS_SHEET.get(clave, ""), "")
         if valor:
             fila[indice] = valor
     return fila
@@ -2644,7 +2863,15 @@ def ordenar_sheet_por_fecha(service, encabezados):
     hojas = metadata.get("sheets", [])
     if not hojas:
         return
-    propiedades = hojas[0].get("properties", {})
+    nombre_hoja = obtener_hoja_registro(service, SPREADSHEET_ID)
+    propiedades = next(
+        (
+            hoja.get("properties", {})
+            for hoja in hojas
+            if hoja.get("properties", {}).get("title", "").strip() == nombre_hoja
+        ),
+        hojas[0].get("properties", {}),
+    )
     service.spreadsheets().batchUpdate(
         spreadsheetId=SPREADSHEET_ID,
         body={
@@ -2667,15 +2894,23 @@ def ordenar_sheet_por_fecha(service, encabezados):
 
 
 def configurar_tabla_registro_sheet(service, cantidad_columnas):
-    """Convierte la primera pestaña en una tabla filtrable y legible."""
+    """Convierte la pestaña operativa en una tabla filtrable y legible."""
     metadata = service.spreadsheets().get(
         spreadsheetId=SPREADSHEET_ID,
-        fields="sheets.properties(sheetId,gridProperties)",
+        fields="sheets.properties(sheetId,title,gridProperties)",
     ).execute()
     hojas = metadata.get("sheets", [])
     if not hojas or not cantidad_columnas:
         return
-    propiedades = hojas[0].get("properties", {})
+    nombre_hoja = obtener_hoja_registro(service, SPREADSHEET_ID)
+    propiedades = next(
+        (
+            hoja.get("properties", {})
+            for hoja in hojas
+            if hoja.get("properties", {}).get("title", "").strip() == nombre_hoja
+        ),
+        hojas[0].get("properties", {}),
+    )
     sheet_id = propiedades.get("sheetId")
     requests = [
         {
@@ -2690,7 +2925,6 @@ def configurar_tabla_registro_sheet(service, cantidad_columnas):
         {
             "setBasicFilter": {
                 "filter": {
-                    "sheetId": sheet_id,
                     "range": {
                         "sheetId": sheet_id,
                         "startRowIndex": 0,
@@ -2760,17 +2994,19 @@ def guardar_registro_en_sheets(service, registro_datos):
                 encabezados.extend(faltantes_oficiales)
                 service.spreadsheets().values().update(
                     spreadsheetId=SPREADSHEET_ID,
-                    range=obtener_rango_primera_hoja(
+                    range=rango_hoja_registro(
                         service,
                         f"A1:{letra_columna(len(encabezados))}1",
+                        SPREADSHEET_ID,
                     ),
                     valueInputOption="USER_ENTERED",
                     body={"values": [encabezados]},
                 ).execute()
             fila = fila_registro_para_sheet(encabezados, registro_datos, fila)
-            rango = obtener_rango_primera_hoja(
+            rango = rango_hoja_registro(
                 service,
                 f"A{existente['numero']}:{letra_columna(max(len(fila), len(encabezados)))}{existente['numero']}",
+                SPREADSHEET_ID,
             )
             body = {"values": [fila]}
             service.spreadsheets().values().update(
@@ -2796,18 +3032,20 @@ def guardar_registro_en_sheets(service, registro_datos):
                 encabezados.extend(faltantes_oficiales)
                 service.spreadsheets().values().update(
                     spreadsheetId=SPREADSHEET_ID,
-                    range=obtener_rango_primera_hoja(
+                    range=rango_hoja_registro(
                         service,
                         f"A1:{letra_columna(len(encabezados))}1",
+                        SPREADSHEET_ID,
                     ),
                     valueInputOption="USER_ENTERED",
                     body={"values": [encabezados]},
                 ).execute()
             valores = [fila_registro_para_sheet(encabezados, registro_datos)]
             siguiente_fila = len(filas_actuales) + 1
-            rango = obtener_rango_primera_hoja(
+            rango = rango_hoja_registro(
                 service,
                 f"A{siguiente_fila}:{letra_columna(len(encabezados))}{siguiente_fila}",
+                SPREADSHEET_ID,
             )
             service.spreadsheets().values().update(
                 spreadsheetId=SPREADSHEET_ID,
@@ -2824,8 +3062,10 @@ def guardar_registro_en_sheets(service, registro_datos):
 
 def leer_registros_sheets(service):
     try:
+        if service and SPREADSHEET_ID:
+            asegurador_registro_hoja(service, SPREADSHEET_ID)
         sheet = service.spreadsheets()
-        rango = obtener_rango_primera_hoja(service, "A1:AZ2000")
+        rango = rango_hoja_registro(service, "A1:AZ2000", SPREADSHEET_ID)
         result = sheet.values().get(
             spreadsheetId=SPREADSHEET_ID,
             range=rango

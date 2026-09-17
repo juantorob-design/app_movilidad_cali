@@ -4,22 +4,71 @@
 
 1. Todo PDF cargado debe leerse completo, página por página, con texto digital y
    OCR como respaldo.
-2. El sistema debe separar los bloques documentales que reconozca: Solicitud o
-   Petición, Recurso, Resolución, Notificación, Constancia de ejecutoria,
-   Desistimiento y otros soportes.
-3. La clasificación del caso debe reconocer exactamente uno de estos estados:
+2. La IA no debe leer todo el expediente completo como una sola masa textual. Debe
+   detectar el flujo administrativo antes de OCR final:
+   - Solicitud o petición.
+   - Consulta de verificación de propiedad del vehículo.
+   - Resolución que resuelve el acto administrativo.
+   - Requerimiento, si aplica.
+   - Oficios de citación a empresa y propietario.
+   - Notificación personal, aviso o publicación web.
+   - Recurso, si aplica.
+   - Resolución del recurso, si aplica.
+   - Constancia de ejecutoria.
+   - Remisión a registro.
+3. La separación documental debe guardar cada bloque en su carpeta correcta dentro
+   del expediente y nunca mezclar páginas de diferentes tipos en una sola carpeta.
+4. La clasificación del caso debe reconocer exactamente uno de estos estados:
    `Con recurso`, `Sin recurso` o `Desistimiento`.
-4. Una resolución que diga que se declara el desistimiento se clasifica como
-   `Desistimiento`, aunque también contenga las palabras Resolución o
+5. Una resolución que diga que se declara el desistimiento se clasifica como
+   `Desistimiento`, aunque también contenga palabras de Resolución o
    Notificación.
-5. La información detectada debe precargar el registro antes de guardar. Si un
+6. Si existen resolución y recurso, el caso es `Con recurso`. Si no hay recurso y
+   existe constancia de ejecutoria o resolución final, el caso es `Sin recurso`.
+   Si solo aparece desistimiento, el caso es `Desistimiento`.
+7. La información detectada debe precargar el registro antes de guardar. Si un
    complemento aporta un dato que faltaba, debe completar el registro sin borrar
    los datos ya confirmados.
-6. La separación debe clasificar cada página por evidencia priorizada. Los
-   títulos de solicitud, resolución, notificación, recurso, desistimiento y
-   ejecutoria tienen prioridad sobre menciones secundarias. Las páginas de
-   continuación heredan el complemento anterior cuando no contienen texto
-   suficiente, evitando enviarlas innecesariamente a `Otro`.
+8. La separación debe clasificar cada página por evidencia priorizada. Los
+   títulos de solicitud, resolución, notificación, recurso, desistimiento,
+   ejecutoria, requerimiento, citación y consulta QX tienen prioridad sobre
+   menciones secundarias. Las páginas de continuación heredan el complemento
+   anterior cuando no contienen texto suficiente, evitando enviarlas
+   innecesariamente a `Otro`.
+
+## Flujo administrativo obligatorio
+
+La desglose operativo del expediente debe respetar este orden:
+
+1. Petición o solicitud.
+2. Consulta de verificación de propiedad del vehículo.
+3. Resolución que resuelve el acto administrativo.
+   - Si hay resolución: continuar con el punto 4.
+   - Si no hay resolución pero sí hay requerimiento: continuar con el punto 4.
+   - Si no hay requerimiento ni resolución: verificar si hay desistimiento.
+     - Si hay desistimiento: pasar al punto 5.
+     - Si no hay desistimiento: debe existir resolución que resuelve o resolución
+       de requerimiento.
+4. Oficios de citación:
+   - Empresa.
+   - Propietario.
+5. Comunicación:
+   - Notificación personal.
+   - Notificación por aviso.
+   - Notificación por publicación web.
+   - Si no hay recurso, continuar con el paso 7.
+6. Recurso, si aplica:
+   - Resolución del recurso.
+   - Citación del recurso.
+   - Notificación personal del recurso.
+   - Notificación por aviso del recurso.
+   - Publicación web del recurso.
+7. Constancia de ejecutoria.
+8. Remisión a registro.
+
+Solo existen 3 finales posibles: `Con recurso`, `Sin recurso` o `Desistimiento`.
+Todo documento fuera del flujo principal debe almacenarse como `Otro` y nunca
+reemplazar el documento principal del expediente.
 
 ## Datos mínimos del registro
 
@@ -40,6 +89,31 @@
 - Remisión a Registro Automotor y fecha de remisión.
 - Observaciones y notas.
 - Foliación total del expediente en hojas.
+
+## Esquema tabular recomendado para la hoja `BD_DESV`
+
+La hoja de cálculo debe mantener una tabla limpia y estable para facilitar la
+búsqueda, la actualización y la validación automática por campos. El esquema
+canónico recomendado es:
+
+```text
+FECHA SOLICITUD, PLACA, EMPRESA, NIT, DIRECCION EMPRESA, PROPIETARIO,
+CEDULA, DIRECCION PROPIETARIO, RAD PADRE, FECHA RADICACION,
+RESOLUCION DESVINCULACION, FECHA DESVINCULACION, OBSERVACION,
+FUNCIONARIO QUE DESVINCULA, NUEVA EMPRESA, SOLICITANTE, ESTADO,
+CORREO ELECTRONICO, RECURSO, FECHA RECURSO, OBSERVACIONES, TIPO CASO,
+TIPO NOTIFICACION, FECHA NOTIFICACION, FECHA EJECUTORIA,
+FECHA REMISION REGISTRO, QX VERIFICADO, ID EXPEDIENTE, UBICACION FISICA,
+CAJA, FOLDER, CARPETA, FOLIACION, FECHA ULTIMA MODIFICACION, SUBIDO POR,
+CORREO SUBIDA, CARGO SUBIDA, ACCESO DIGITAL, DRIVE FOLDER,
+DOCUMENTOS DRIVE, PDF UNIFICADO, DOCUMENTOS FALTANTES,
+CONTENIDO DOCUMENTAL
+```
+
+La aplicación debe seguir aceptando columnas legacy con nombres antiguos (por
+ejemplo `DIRECCION`, `FECHA`, `RADICADO PADRE`, `RESOLUCION`, `FECHA`), pero
+la escritura preferente debe usar este esquema centralizado para no duplicar
+campos ni mezclar direcciones entre empresa y propietario.
 
 La foliación se propone automáticamente contando las páginas del PDF, pero el
 valor del campo editable en el formulario tiene prioridad y es el que se

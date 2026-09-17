@@ -21,6 +21,14 @@ datos están disponibles en el texto. El archivo se normaliza como
 requerir que el usuario complete los campos del formulario. El registro muestra
 un resumen y un visor integrado antes de guardar.
 
+El flujo documental debe seguir la secuencia administrativa correcta: petición,
+consulta QX, resolución o requerimiento, citaciones, notificación, recurso y
+constancia de ejecutoria. La aplicación debe clasificar el caso como `Con
+recurso`, `Sin recurso` o `Desistimiento` y separar cada documento en su carpeta
+correspondiente dentro del expediente. Solo después de separar por tipos se
+aplica la lectura y el OCR de cada bloque para rellenar los formularios y la
+hoja de registro.
+
 Las imágenes PNG y JPG cargadas como documentos se convierten automáticamente
 a PDF antes de guardarse. De esta forma pueden formar parte del expediente
 unificado, conservar su tipo documental y sincronizarse con Drive y Sheets.

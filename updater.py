@@ -1,4 +1,6 @@
 import os
+import re
+import shlex
 import sys
 import requests
 import subprocess
@@ -119,8 +121,77 @@ def _literal_powershell(valor):
     return "'" + str(valor).replace("'", "''") + "'"
 
 
+def _normalizar_uninstall_string(uninstall_string):
+    """Normaliza una cadena como 'C:\\ruta\\unins.exe /VERYSILENT' a exe + argumentos."""
+    cadena = (uninstall_string or "").strip()
+    if not cadena:
+        return "", []
+    if cadena.startswith('"'):
+        partes = shlex.split(cadena, posix=False)
+        if partes:
+            return partes[0].strip('"'), partes[1:]
+        return cadena.strip('"'), []
+    match = re.match(r'^("?[^"]+"?)(?:\s+(.*))?$', cadena)
+    if not match:
+        return cadena, []
+    exe = match.group(1).strip('"')
+    args_str = (match.group(2) or "").strip()
+    args = shlex.split(args_str, posix=False) if args_str else []
+    return exe, args
+
+
+def buscar_desinstalador_instalado():
+    """Busca la entrada de desinstalación para la app en HKLM/HKCU."""
+    script = r"""
+    $roots = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+    )
+    foreach ($root in $roots) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        foreach ($key in Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue) {
+            $displayName = $key.GetValue('DisplayName')
+            $uninstallString = $key.GetValue('UninstallString')
+            if ($null -ne $displayName -and $displayName -match 'Sistema de Desvinculaciones|SistemaDesvinculaciones' -and $uninstallString) {
+                $uninstallString | Write-Output
+                return
+            }
+        }
+    }
+    $installRoot = Join-Path ${env:ProgramFiles} 'SistemaDesvinculaciones'
+    $primaryUninstaller = Join-Path $installRoot 'unins000.exe'
+    if (Test-Path -LiteralPath $primaryUninstaller) {
+        $primaryUninstaller | Write-Output
+    }
+    """
+    try:
+        resultado = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        if resultado.returncode != 0:
+            return ""
+        salida = resultado.stdout.strip()
+        if not salida:
+            return ""
+        return salida.splitlines()[0].strip()
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return ""
+
+
 def download_and_apply_update(download_url):
-    """Descarga, instala con elevación y reinicia la aplicación actualizada."""
+    """Descarga el instalador, desinstala la versión anterior y ejecuta la instalación limpia."""
     if not download_url:
         return
 
@@ -155,25 +226,34 @@ def download_and_apply_update(download_url):
         if tamano_descargado == 0:
             raise OSError("El instalador descargado está vacío.")
 
-        desinstalador = os.path.join(
-            os.path.dirname(ejecutable),
-            "unins000.exe",
-        )
+        desinstalador = buscar_desinstalador_instalado()
+        if not desinstalador:
+            desinstalador = os.path.join(os.path.dirname(ejecutable), "unins000.exe")
+
+        if os.path.exists(desinstalador):
+            exe_uninstalar, args_extra = _normalizar_uninstall_string(desinstalador)
+            uninstall_args = [*args_extra, '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART']
+            if not args_extra:
+                uninstall_args = ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART']
+        else:
+            exe_uninstalar = ""
+            uninstall_args = []
+
         script_content = f"""$ErrorActionPreference = 'Stop'
 $installer = {_literal_powershell(instalador)}
 $application = {_literal_powershell(ejecutable)}
-$uninstaller = {_literal_powershell(desinstalador)}
+$uninstallExecutable = { _literal_powershell(exe_uninstalar) if exe_uninstalar else "''" }
+$uninstallArgs = @({", ".join(f"{_literal_powershell(arg)}" for arg in uninstall_args) if uninstall_args else ""})
 Start-Sleep -Seconds 2
-$uninstallArguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
-if (Test-Path -LiteralPath $uninstaller) {{
-    $uninstallProcess = Start-Process -FilePath $uninstaller -ArgumentList $uninstallArguments -Verb RunAs -Wait -PassThru
-    if ($uninstallProcess.ExitCode -ne 0) {{
+if ($uninstallExecutable -and (Test-Path -LiteralPath $uninstallExecutable)) {{
+    $uninstallProcess = Start-Process -FilePath $uninstallExecutable -ArgumentList $uninstallArgs -Verb RunAs -Wait -PassThru
+    if ($null -ne $uninstallProcess -and $uninstallProcess.ExitCode -ne 0) {{
         exit $uninstallProcess.ExitCode
     }}
 }}
 $installArguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS', '/RESTARTAPPLICATIONS')
 $process = Start-Process -FilePath $installer -ArgumentList $installArguments -Verb RunAs -Wait -PassThru
-if ($process.ExitCode -ne 0) {{
+if ($null -ne $process -and $process.ExitCode -ne 0) {{
     exit $process.ExitCode
 }}
 if (-not (Test-Path -LiteralPath $application)) {{
@@ -186,25 +266,19 @@ Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
         with open(script_actualizacion, "w", encoding="utf-8") as f:
             f.write(script_content)
 
-        comando_elevado = (
-            "Start-Process -FilePath 'powershell.exe' -Verb RunAs "
-            "-ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',"
-            f"{_literal_powershell(script_actualizacion)})"
-        )
         subprocess.Popen(
             [
                 "powershell.exe",
                 "-NoProfile",
                 "-ExecutionPolicy",
                 "Bypass",
-                "-Command",
-                comando_elevado,
+                "-File",
+                script_actualizacion,
             ],
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
             | subprocess.DETACHED_PROCESS
             | subprocess.CREATE_NO_WINDOW,
         )
-        # El proceso auxiliar espera a que esta instancia libere sus archivos.
         os._exit(0)
 
     except (OSError, requests.RequestException):
