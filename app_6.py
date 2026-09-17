@@ -2125,6 +2125,23 @@ def convertir_imagen_a_pdf(contenido, nombre):
 
 
 @lru_cache(maxsize=4)
+def detectar_estado_documento(texto, tipo_fallback="Solicitud"):
+    """Devuelve si un PDF es un expediente completo o un complemento."""
+    evidencia = normalizar_errores_ocr(texto or "").lower()
+    if not evidencia:
+        return "Expediente completo" if str(tipo_fallback or "").strip() == "Expediente completo" else "Complemento"
+    multi_seccion = re.search(
+        r"\b(?:solicitud|petici[oó]n)\b.*\b(?:resoluci[oó]n|recurso|notificaci[oó]n|citaci[oó]n|ejecutoria|consulta\s+qx)\b|"
+        r"\b(?:resoluci[oó]n|recurso|notificaci[oó]n|citaci[oó]n|ejecutoria|consulta\s+qx)\b.*\b(?:solicitud|petici[oó]n)\b",
+        evidencia,
+    )
+    if multi_seccion:
+        return "Expediente completo"
+    if re.search(r"\b(?:solicitud|petici[oó]n|consulta\s+qx|requerimiento|desistimiento|recurso|resoluci[oó]n|notificaci[oó]n|citaci[oó]n|constancia\s+de\s+ejecutoria)\b", evidencia):
+        return "Complemento"
+    return "Expediente completo" if str(tipo_fallback or "").strip() == "Expediente completo" else "Complemento"
+
+
 def separar_pdf_completo(contenido, tipo_fallback):
     """Quita páginas vacías y separa un PDF por bloques documentales detectables."""
     global _ocr_cache_writes_pending
@@ -2133,10 +2150,6 @@ def separar_pdf_completo(contenido, tipo_fallback):
     try:
         lector = PdfReader(io.BytesIO(contenido))
         documento_visual = fitz.open(stream=contenido, filetype="pdf") if fitz else None
-        tiene_texto_digital = any(
-            len(" ".join((pagina.extract_text() or "").split())) >= 8
-            for pagina in lector.pages
-        )
         grupos = []
         actual = None
         textos_paginas = {}
@@ -2160,10 +2173,7 @@ def separar_pdf_completo(contenido, tipo_fallback):
             texto = " ".join(parte for parte in (texto, texto_ocr) if parte)
             textos_paginas[numero_pagina] = texto
             tipo_detectado = clasificar_tipo_documento(texto, "")
-            # Las páginas de continuación suelen tener poco texto o solo
-            # datos administrativos; se conservan dentro del complemento
-            # anterior en vez de crear una carpeta "Otro".
-            tipo = tipo_detectado or (actual["tipo"] if actual else tipo_fallback)
+            tipo = tipo_detectado or (actual["tipo"] if actual else detectar_estado_documento(texto, tipo_fallback))
             if actual and actual["tipo"] == tipo:
                 actual["paginas"].append(pagina)
                 actual["indices"].append(numero_pagina)
@@ -2364,19 +2374,28 @@ def nombre_documento_expediente(radicado, placa, fecha, ubicacion, extension):
     """Genera un nombre estable para ubicar documentos aunque lleguen con otro nombre."""
     partes = [radicado, placa, fecha, ubicacion]
     nombre = "_".join(
-        re.sub(r"[^A-Za-z0-9-]+", "-", str(parte).strip()).strip("-")
-        for parte in partes
+        token for token in (_token_nombre_documento(parte) for parte in partes)
+        if token
     )
-    return f"{nombre}{extension.lower()}"
+    return f"{nombre or 'EXPEDIENTE'}{extension.lower()}"
+
+
+def _token_nombre_documento(valor):
+    """Normaliza un valor para la convención de nombres del expediente."""
+    texto = str(valor or "").strip()
+    if not texto:
+        return ""
+    texto = re.sub(r"[^A-Za-z0-9ÁÉÍÓÚáéíóúÑñÜü]+", "-", texto)
+    texto = re.sub(r"-+", "-", texto).strip("-")
+    return texto
 
 
 def nombre_carpeta_expediente(radicado, placa, fecha, ubicacion):
     """Genera la carpeta final: RADICADO_PADRE_PLACA_FECHA_UBICACION."""
     partes = [radicado, placa, fecha, ubicacion]
     nombre = "_".join(
-        re.sub(r"[^A-Za-z0-9#-]+", "-", str(parte).strip()).strip("-")
-        for parte in partes
-        if str(parte or "").strip()
+        token for token in (_token_nombre_documento(parte) for parte in partes)
+        if token
     )
     return nombre or "RADICADO_PENDIENTE"
 
@@ -2385,9 +2404,8 @@ def nombre_pdf_expediente(radicado, placa, fecha, extension=".pdf"):
     """Genera el nombre del PDF completo: RADICADO_PADRE_PLACA_FECHA."""
     partes = [radicado, placa, fecha]
     nombre = "_".join(
-        re.sub(r"[^A-Za-z0-9-]+", "-", str(parte).strip()).strip("-")
-        for parte in partes
-        if str(parte or "").strip()
+        token for token in (_token_nombre_documento(parte) for parte in partes)
+        if token
     )
     return f"{nombre or 'EXPEDIENTE'}{extension.lower()}"
 

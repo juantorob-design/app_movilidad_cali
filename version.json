@@ -1,5 +1,5 @@
 {
-  "version": "1.1.12",
-  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.12/SistemaDesvinculaciones-Setup-1.1.12.exe",
-  "changelog": "Versión integral: OCR local de PDFs con caché y DirectML/CPU; detección y separación de Solicitud, Resolución, Notificación, Recurso, Desistimiento y Constancia; visor PDF y copias locales; precarga administrativa desde OCR, base local y Google Sheets; formulario con prioridad de datos confirmados y ubicación física manual; checklist por tipo de caso; foliación; barra de progreso; organización en Google Drive por Peticion/Pendientes/AÑO con PDF completo y complementos separados; deduplicación por huella y radicado; consulta local y remota por radicado, placa, empresa, NIT, cédula, ubicación o fecha; tabla de Google Sheets con filtros y trazabilidad; roles, permisos, solicitudes de descarga; actualizador autorizado desde GitHub; editor PDF local para unir, dividir, extraer, ordenar y rotar documentos."
+  "version": "1.1.13",
+  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.13/SistemaDesvinculaciones-Setup-1.1.13.exe",
+  "changelog": "Versión de publicación: corrige la escritura en Google Sheets, conserva la hoja operativa tabla_2, evita sobreescrituras de registros y actualiza la validación del flujo de carga. Incluye OCR local de PDFs con caché y DirectML/CPU, separación documental, visor PDF, copias locales, barra de progreso, clasificación por expediente completo o complemento y organización por año en Drive."
 }
