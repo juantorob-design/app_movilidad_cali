@@ -73,6 +73,30 @@ try:
     import onnxruntime as ort
 except (ImportError, ModuleNotFoundError):
     ort = None
+try:
+    from local_ai_service import (
+        OLLAMA_MODEL,
+        analizar_expediente_local,
+        analisis_a_markdown,
+        ollama_disponible,
+    )
+except ImportError:
+    OLLAMA_MODEL = "qwen2.5:7b"
+    analizar_expediente_local = None
+    analisis_a_markdown = None
+    ollama_disponible = lambda: False
+try:
+    from dependency_manager import (
+        OLLAMA_MODEL as OLLAMA_REQUIRED_MODEL,
+        buscar_ollama,
+        descargar_modelo,
+        obtener_modelos_ollama,
+    )
+except ImportError:
+    OLLAMA_REQUIRED_MODEL = OLLAMA_MODEL
+    buscar_ollama = lambda: None
+    descargar_modelo = None
+    obtener_modelos_ollama = lambda: []
 
 _ocr_engine = None
 _ocr_cache_writes_pending = 0
@@ -2202,6 +2226,9 @@ def separar_pdf_completo(contenido, tipo_fallback):
                 "contenido": salida.getvalue(),
                 "tipo": grupo["tipo"],
                 "paginas": len(grupo["paginas"]),
+                "paginas_por_seccion": [
+                    indice + 1 for indice in grupo["indices"]
+                ],
                 "texto": normalizar_texto_documento(
                     " ".join(
                         textos_paginas.get(indice, "")
@@ -2370,9 +2397,16 @@ def tipos_documentales_detectados(texto, tipo_fallback):
     return detectados or {tipo_fallback}
 
 
-def nombre_documento_expediente(radicado, placa, fecha, ubicacion, extension):
+def nombre_documento_expediente(
+    radicado,
+    placa,
+    fecha,
+    ubicacion,
+    extension,
+    tipo_caso=None,
+):
     """Genera un nombre estable para ubicar documentos aunque lleguen con otro nombre."""
-    partes = [radicado, placa, fecha, ubicacion]
+    partes = [radicado, placa, fecha, ubicacion, tipo_caso]
     nombre = "_".join(
         token for token in (_token_nombre_documento(parte) for parte in partes)
         if token
@@ -2400,9 +2434,15 @@ def nombre_carpeta_expediente(radicado, placa, fecha, ubicacion):
     return nombre or "RADICADO_PENDIENTE"
 
 
-def nombre_pdf_expediente(radicado, placa, fecha, extension=".pdf"):
+def nombre_pdf_expediente(
+    radicado,
+    placa,
+    fecha,
+    tipo_caso=None,
+    extension=".pdf",
+):
     """Genera el nombre del PDF completo: RADICADO_PADRE_PLACA_FECHA."""
-    partes = [radicado, placa, fecha]
+    partes = [radicado, placa, fecha, tipo_caso]
     nombre = "_".join(
         token for token in (_token_nombre_documento(parte) for parte in partes)
         if token
@@ -4170,6 +4210,25 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     texto_archivo,
                     archivo.name,
                 )
+                estado_documento = detectar_estado_documento(
+                    texto_archivo,
+                    tipo_documento,
+                )
+                datos_archivo["estado_carga"] = estado_documento
+                datos_archivo["paginas_por_seccion"] = [
+                    {
+                        "tipo": parte.get("tipo", "Otro"),
+                        "paginas": parte.get("paginas_por_seccion", []),
+                    }
+                    for parte in (
+                        separar_pdf_completo(
+                            contenido_analizable,
+                            tipo_documento,
+                        )
+                        if archivo.name.lower().endswith(".pdf")
+                        else []
+                    )
+                ]
                 if tipo_detectado:
                     tipos_carga.add(tipo_detectado)
                 tipos_documentales_archivo = tipos_documentales_detectados(
@@ -4309,6 +4368,60 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     "Antes de guardar, revisa los campos resaltados y confirma "
                     "que la información corresponda al expediente."
                 )
+            st.markdown("#### Análisis documental con IA local")
+            st.caption(
+                f"Opcional y privado: usa Ollama en este equipo con el modelo "
+                f"`{OLLAMA_MODEL}`. El OCR no se envía a Internet."
+            )
+            if ollama_disponible():
+                modelos_locales = obtener_modelos_ollama()
+                if OLLAMA_REQUIRED_MODEL not in modelos_locales:
+                    st.warning(
+                        f"El modelo `{OLLAMA_REQUIRED_MODEL}` todavía no está descargado."
+                    )
+                    if st.button(
+                        f"Descargar modelo {OLLAMA_REQUIRED_MODEL}",
+                        key=f"descargar_modelo_ia_{carga_id}",
+                    ):
+                        mensajes_modelo = []
+                        try:
+                            with st.spinner(
+                                f"Descargando {OLLAMA_REQUIRED_MODEL} de forma local..."
+                            ):
+                                descargar_modelo(
+                                    OLLAMA_REQUIRED_MODEL,
+                                    mensajes_modelo.append,
+                                )
+                            st.success("Modelo local descargado correctamente.")
+                        except (FileNotFoundError, RuntimeError) as error:
+                            st.error(str(error))
+                if st.button(
+                    "Analizar expediente con IA local",
+                    key=f"analizar_ia_local_{carga_id}",
+                    type="secondary",
+                ):
+                    if analizar_expediente_local is None or analisis_a_markdown is None:
+                        st.error("El módulo de IA local no está disponible en esta instalación.")
+                    else:
+                        with st.spinner("La IA local está analizando el expediente..."):
+                            try:
+                                resultado_ia = analizar_expediente_local(
+                                    normalizar_texto_documento(
+                                        " ".join(textos_analizados.values())
+                                    )
+                                )
+                                st.session_state[f"analisis_ia_local_{carga_id}"] = resultado_ia
+                            except (ConnectionError, ValueError) as error:
+                                st.error(str(error))
+            else:
+                st.info(
+                    "IA local no disponible todavía. Instala Ollama, inicia su servicio "
+                    f"y descarga el modelo `{OLLAMA_MODEL}` para habilitar este análisis."
+                )
+            resultado_ia_guardado = st.session_state.get(f"analisis_ia_local_{carga_id}")
+            if resultado_ia_guardado and analisis_a_markdown is not None:
+                with st.container(border=True):
+                    st.markdown(analisis_a_markdown(resultado_ia_guardado))
             st.markdown("#### Vista previa y destino del documento")
             destino_radicado = datos_carga.get("radicado_padre", "")
             destino_placa = datos_carga.get("placa", "")
@@ -4924,6 +5037,10 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                         "",
                                     )
                                 ),
+                                "paginas_por_seccion": parte.get(
+                                    "paginas_por_seccion",
+                                    [],
+                                ),
                                 **parte,
                             })
                         barra_guardado.progress(
@@ -4975,6 +5092,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             str(fecha_registro_previa or "PENDIENTE"),
                             tipo_documento_final,
                             os.path.splitext(nombre_original)[1] or ".pdf",
+                            tipo_detectado,
                         )
                         if datos_pdf:
                             documentos_detectados.append(
@@ -5053,6 +5171,15 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             "metadatos_pdf": datos_pdf,
                             "tipo_documento": tipo_documento_final,
                             "tipo_caso_detectado": tipo_detectado,
+                            "paginas_por_seccion": archivo_preparado.get(
+                                "paginas_por_seccion",
+                                [],
+                            ),
+                            "estado_carga": (
+                                "Expediente completo"
+                                if tipo_documento_final == "Expediente completo"
+                                else "Complemento"
+                            ),
                             "huella": huella,
                             "ruta_local": ruta_local,
                             "pendiente": not bool(fecha_registro_previa),
@@ -5096,6 +5223,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                 radicado_padre,
                                 matricula_qx,
                                 str(fecha_registro_previa),
+                                tipo_caso_detectado or tipo_caso,
                             )
                             id_unificado, url_unificado = (None, None)
                             huella_unificado = huella_contenido(pdf_unificado)
@@ -5147,6 +5275,11 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                 "drive_url": url_unificado,
                                 "metadatos_pdf": {},
                                 "tipo_documento": "Expediente completo",
+                                "tipo_caso_detectado": tipo_caso_final,
+                                "estado_carga": "Expediente completo",
+                                "paginas_por_seccion": list(
+                                    range(1, len(PdfReader(io.BytesIO(pdf_unificado)).pages) + 1)
+                                ) if PdfReader is not None else [],
                                 "orden_fuentes": [
                                     archivo.name for archivo in archivos_ordenados
                                 ],

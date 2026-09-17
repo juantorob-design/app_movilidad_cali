@@ -79,6 +79,28 @@ CPU; no instala Python ni solicita permisos administrativos para acceder a la
 GPU. Si el equipo no tiene una GPU compatible o el controlador no está
 disponible, el OCR continúa funcionando mediante CPU local.
 
+### Análisis con IA local
+
+El análisis generativo es opcional y se ejecuta localmente mediante
+[Ollama](https://ollama.com/). El texto OCR no se envía a Gemini ni a otro
+servicio externo. Instala Ollama, inicia su servicio y descarga un modelo:
+
+```powershell
+ollama pull qwen2.5:7b
+```
+
+La aplicación detecta Ollama en `http://127.0.0.1:11434` y muestra el botón
+**Analizar expediente con IA local**. Se puede cambiar el modelo mediante
+`SISTEMA_OLLAMA_MODEL`; la URL y el tiempo de espera también se pueden ajustar
+con `SISTEMA_OLLAMA_URL` y `SISTEMA_OLLAMA_TIMEOUT`. Si Ollama no está
+disponible, el OCR, las reglas administrativas y el formulario siguen
+funcionando sin cambios.
+
+La aplicación no instala Ollama ni descarga modelos automáticamente en segundo
+plano. La preparación requiere una acción explícita del usuario. Las
+actualizaciones de motores solo deben habilitarse mediante un manifiesto HTTPS
+con SHA-256 y una URL autorizada; no se ejecutan binarios sin verificación.
+
 ## Datos y credenciales
 
 Las credenciales OAuth, tokens, la base local y los entornos de Python están excluidos

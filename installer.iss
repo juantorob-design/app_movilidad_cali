@@ -1,5 +1,5 @@
 #define MyAppName "Sistema de Desvinculaciones"
-#define MyAppVersion "1.1.13"
+#define MyAppVersion "1.1.14"
 #define MyAppPublisher "Sistema de Desvinculaciones"
 #define MyAppExeName "SistemaDesvinculaciones.exe"
 
@@ -35,5 +35,6 @@ Source: "dist\SistemaDesvinculaciones\*"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"
 
-[Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Iniciar {#MyAppName}"; Flags: nowait postinstall skipifsilent
+; La aplicación se abre manualmente desde el acceso directo del menú de inicio.
+; Evitamos iniciar el proceso desde el instalador para no generar el error
+; "CallSpawnServer: Unexpected response: 0" durante la finalización.

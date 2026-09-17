@@ -20,6 +20,8 @@ datas += copy_metadata('google-api-python-client')
 # Archivos estáticos indispensables del proyecto
 archivos_proyecto = [
     ('app_6.py', '.'),
+    ('local_ai_service.py', '.'),
+    ('dependency_manager.py', '.'),
     ('updater.py', '.'),
     ('images', 'images'),
 ]
@@ -70,6 +72,8 @@ hiddenimports = [
     'PIL.PngImagePlugin',
     'fitz',
     'rapidocr_onnxruntime',
+    'local_ai_service',
+    'dependency_manager',
     'clr',
 ] + collect_submodules('streamlit') + collect_submodules('streamlit_pdf') + collect_submodules('webview') + collect_submodules('openpyxl') + collect_submodules('googleapiclient') + collect_submodules('google_auth_oauthlib') + collect_submodules('PySide6') + collect_submodules('rapidocr_onnxruntime')
 
