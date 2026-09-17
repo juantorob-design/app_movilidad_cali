@@ -1142,13 +1142,22 @@ def revisar_configuracion_oauth():
         with open(CLIENT_SECRETS_FILE, "r", encoding="utf-8-sig") as archivo:
             config = json.load(archivo)
         cliente = config.get("web") or config.get("installed") or {}
+        oauth_port = os.environ.get("SISTEMA_OAUTH_PORT", "8080").strip()
+        if not oauth_port.isdigit() or not 1 <= int(oauth_port) <= 65535:
+            return "SISTEMA_OAUTH_PORT debe ser un puerto válido entre 1 y 65535."
+        redirect_uris = cliente.get("redirect_uris", [])
         if config.get("web") and not any(
-            "8080" in uri for uri in cliente.get("redirect_uris", [])
+            uri in {
+                f"http://localhost:{oauth_port}/",
+                f"http://127.0.0.1:{oauth_port}/",
+            }
+            for uri in redirect_uris
         ):
             return (
                 "Tu credentials.json es de tipo web y no tiene registrada la "
-                "redirección local del puerto 8080. Agrega "
-                "http://localhost:8080/ y http://127.0.0.1:8080/ en Google Cloud, "
+                f"redirección local del puerto {oauth_port}. Agrega "
+                f"http://localhost:{oauth_port}/ y "
+                f"http://127.0.0.1:{oauth_port}/ en Google Cloud, "
                 "o descarga un cliente OAuth de tipo Aplicación de escritorio."
             )
     except (OSError, json.JSONDecodeError, TypeError):

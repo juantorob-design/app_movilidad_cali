@@ -1,5 +1,5 @@
 {
-  "version": "1.1.14",
-  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.14/SistemaDesvinculaciones-Setup-1.1.14.exe",
-  "changelog": "Automatiza el procesamiento físico de PDFs al cargar: clasifica expediente completo o complemento, conserva páginas por sección, aplica nombres parciales o completos, crea subcarpetas documentales y conecta OCR, IA local, pypdf y barra de progreso. Mantiene la gestión segura y opcional de Ollama."
+  "version": "1.1.15",
+  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.15/SistemaDesvinculaciones-Setup-1.1.15.exe",
+  "changelog": "Corrige la validación OAuth para respetar SISTEMA_OAUTH_PORT, validar el rango permitido y comprobar las URI exactas del puerto configurado. Mantiene el procesamiento físico de PDFs, OCR, IA local, pypdf y la gestión segura y opcional de Ollama."
 }
