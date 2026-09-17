@@ -550,6 +550,25 @@ DOCUMENTOS_BASE_POR_CASO = {
     "Desistimiento": ("Solicitud", "Consulta QX", "Desistimiento"),
 }
 
+ORDEN_DOCUMENTAL_PRELACION = (
+    "Solicitud",
+    "Consulta QX",
+    "Resolución",
+    "Requerimiento",
+    "Desistimiento",
+    "Oficio de citación",
+    "Notificación personal",
+    "Notificación por aviso",
+    "Notificación por publicación web",
+    "Notificación",
+    "Recurso",
+    "Resolución del recurso",
+    "Citación del recurso",
+    "Notificación del recurso",
+    "Constancia de ejecutoria",
+    "Remisión a registro",
+)
+
 
 def supabase_configurado():
     """Indica si la aplicación tiene configurado el cliente público de Supabase."""
@@ -1330,6 +1349,66 @@ def carpeta_drive_para_documento(service, carpeta_expediente_id, tipo_documento)
     )
 
 
+def nombre_complemento_peticion(
+    radicado,
+    placa,
+    fecha,
+    caja="",
+    folder="",
+    carpeta="",
+    recurso="",
+    numero=1,
+):
+    """Genera el nombre estándar de un complemento en Peticion/Pendientes."""
+    try:
+        fecha_obj = datetime.date.fromisoformat(str(fecha or "").strip())
+        fecha_formateada = fecha_obj.strftime("%d_%m_%Y")
+    except (TypeError, ValueError):
+        fecha_formateada = "FECHA_PENDIENTE"
+    partes = [
+        fecha_formateada,
+    ]
+    valores = [
+        radicado or "NRO_PETICION_PENDIENTE",
+        placa or "PLACA_PENDIENTE",
+        caja or "CAJA_PENDIENTE",
+        folder or "FOLDER_PENDIENTE",
+        carpeta or "CARPETA_PENDIENTE",
+        recurso or "SIN_RECURSO",
+    ]
+    base = "_".join(
+        [_token_nombre_documento(valor) for valor in valores[:2]]
+        + partes
+        + [_token_nombre_documento(valor) for valor in valores[2:]]
+    )
+    sufijo = f"_{int(numero):02d}" if numero > 1 else ""
+    return f"{base}{sufijo}.pdf"
+
+
+def ordenar_documentos_por_precedencia(documentos):
+    """Ordena complementos según la secuencia administrativa obligatoria."""
+    posiciones = {
+        tipo.casefold(): indice
+        for indice, tipo in enumerate(ORDEN_DOCUMENTAL_PRELACION)
+    }
+
+    def clave(item):
+        tipo = str(
+            item.get("tipo_documento")
+            or item.get("tipo")
+            or "Otro"
+        ).strip()
+        tipo_normalizado = tipo.casefold()
+        posicion = posiciones.get(tipo_normalizado)
+        if posicion is None and tipo_normalizado == "oficio de citación":
+            posicion = posiciones["oficio de citación"]
+        if posicion is None:
+            posicion = len(ORDEN_DOCUMENTAL_PRELACION)
+        return posicion, str(item.get("nombre") or "").casefold()
+
+    return sorted(documentos or [], key=clave)
+
+
 def preparar_carga_drive(
     service,
     archivos,
@@ -1373,7 +1452,13 @@ def preparar_carga_drive(
                     "_",
                     os.path.splitext(archivo.name)[0],
                 ).strip("_") or f"carga_{carga_id}"
-                nombre = f"{base}_{tipo}_{numero:02d}.pdf"
+                nombre = nombre_complemento_peticion(
+                    radicado,
+                    placa,
+                    fecha,
+                    numero=numero,
+                    recurso=tipo,
+                )
                 existente = buscar_archivo_drive(
                     service,
                     carpeta_tipo,
@@ -2319,6 +2404,15 @@ def clasificar_tipo_documento(texto, tipo_fallback):
             (9, r"\bdesistimiento\b|declara(?:r)?\s+el\s+desistimiento"),
             (3, r"\bdesistim\w*"),
         ],
+        "Resolución del recurso": [
+            (14, r"resoluci[oó]n\s+del\s+recurso|resolucion\s+del\s+recurso|recurso\s+resuelto"),
+        ],
+        "Citación del recurso": [
+            (14, r"citaci[oó]n\s+del\s+recurso|citacion\s+del\s+recurso"),
+        ],
+        "Notificación del recurso": [
+            (14, r"notificaci[oó]n\s+del\s+recurso|notificacion\s+del\s+recurso"),
+        ],
         "Resolución": [
             (10, r"\bresoluci[oó]n\b|\bresolucion\b\s*(?:no|n[°ºo])?\s*[:#\-.]?\s*\w+"),
             (9, r"\bpor\s+la\s+cual\b.*\bdesvincul"),
@@ -2347,9 +2441,6 @@ def clasificar_tipo_documento(texto, tipo_fallback):
             (10, r"recurso\s+de\s+(?:reposici[oó]n|apelaci[oó]n)"),
             (8, r"interpuso\s+(?:un\s+)?recurso|present[oó]\s+(?:un\s+)?recurso"),
             (3, r"\brecurso\b|impugn"),
-        ],
-        "Resolución del recurso": [
-            (10, r"resoluci[oó]n\s+del\s+recurso|resolucion\s+del\s+recurso|recurso\s+resuelto"),
         ],
         "Consulta QX": [
             (12, r"consulta\s+de\s+verificaci[oó]n\s+de\s+propiedad|consulta\s+de\s+propiedad|verificaci[oó]n\s+de\s+propiedad|consulta\s+qx|verificaci[oó]n\s+qx"),
@@ -5194,16 +5285,20 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             "pendiente": not bool(fecha_registro_previa),
                         })
 
-                    pdfs_cargados = [
-                        archivo["contenido"] for archivo in archivos_preparados
+                    documentos_para_unificar = [
+                        archivo
+                        for archivo in archivos_preparados
                         if archivo["nombre"].lower().endswith(".pdf")
                     ]
                     if existente and drive_service:
                         huellas_unificado = {
-                            huella_contenido(contenido)
-                            for contenido in pdfs_cargados
+                            huella_contenido(documento["contenido"])
+                            for documento in documentos_para_unificar
                         }
-                        for documento_existente in existente.get("canvas_paginas", []):
+                        documentos_existentes = ordenar_documentos_por_precedencia(
+                            existente.get("canvas_paginas", [])
+                        )
+                        for documento_existente in documentos_existentes:
                             if (
                                 documento_existente.get("tipo_documento")
                                 == "Expediente completo"
@@ -5223,8 +5318,17 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                 continue
                             huella_existente = huella_contenido(contenido_existente)
                             if huella_existente not in huellas_unificado:
-                                pdfs_cargados.insert(0, contenido_existente)
+                                documento_existente = documento_existente.copy()
+                                documento_existente["contenido"] = contenido_existente
+                                documentos_para_unificar.append(documento_existente)
                                 huellas_unificado.add(huella_existente)
+                    archivos_para_unificar = ordenar_documentos_por_precedencia(
+                        documentos_para_unificar
+                    )
+                    pdfs_cargados = [
+                        documento["contenido"]
+                        for documento in archivos_para_unificar
+                    ]
                     if pdfs_cargados:
                         pdf_unificado = unir_archivos_pdf(pdfs_cargados)
                         if pdf_unificado:
@@ -5757,7 +5861,48 @@ elif st.session_state.navegacion == "Consulta & Archivo":
         if not paginas:
             st.info("Este expediente no posee archivos adjuntos registrados localmente.")
         else:
-            for p in paginas:
+            documentos_completos = [
+                documento
+                for documento in paginas
+                if documento.get("tipo_documento") == "Expediente completo"
+            ]
+            opciones_visualizacion = []
+            if documentos_completos:
+                opciones_visualizacion.append("PDF completo unificado")
+            opciones_visualizacion.append("Explorador de complementos")
+            modo_visualizacion = st.radio(
+                "Modo de visualización",
+                opciones_visualizacion,
+                horizontal=True,
+                key=f"modo_visualizacion_{exp['radicado_padre']}",
+            )
+            if modo_visualizacion == "PDF completo unificado":
+                paginas_visibles = documentos_completos[:1]
+            else:
+                complementos = [
+                    documento
+                    for documento in paginas
+                    if documento.get("tipo_documento") != "Expediente completo"
+                ]
+                if not complementos:
+                    st.info("No hay complementos individuales disponibles.")
+                    paginas_visibles = []
+                else:
+                    nombres_complementos = [
+                        documento.get("nombre", "Complemento")
+                        for documento in complementos
+                    ]
+                    complemento_seleccionado = st.selectbox(
+                        "Complemento",
+                        nombres_complementos,
+                        key=f"complemento_visualizacion_{exp['radicado_padre']}",
+                    )
+                    paginas_visibles = [
+                        documento
+                        for documento in complementos
+                        if documento.get("nombre") == complemento_seleccionado
+                    ]
+            for p in paginas_visibles:
                 cp1, cp2, cp3 = st.columns([3, 1.5, 1.5])
                 cp1.write(f"Página {p['pagina_id']}: {p['nombre']} ({p['tamano']})")
                 if (p.get("drive_id") and drive_service) or p.get("ruta_local"):

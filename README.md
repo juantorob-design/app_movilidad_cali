@@ -33,9 +33,20 @@ Las imágenes PNG y JPG cargadas como documentos se convierten automáticamente
 a PDF antes de guardarse. De esta forma pueden formar parte del expediente
 unificado, conservar su tipo documental y sincronizarse con Drive y Sheets.
 
-Cuando se cargan varios PDF, la pantalla permite ordenar sus archivos antes de
-guardarlos. El sistema genera además un PDF unificado en ese orden y conserva
-los archivos fuente y su trazabilidad dentro del expediente.
+Cuando se cargan varios PDF, el sistema limpia las páginas blancas, separa los
+bloques consecutivos y conserva las páginas de origen de cada complemento. El
+PDF unificado se genera con la prelación administrativa obligatoria: petición,
+consulta QX, resolución o requerimiento, desistimiento cuando corresponda,
+citaciones, notificaciones, recurso y sus actuaciones, constancia de ejecutoria
+y remisión a registro. Los documentos que no pertenecen al flujo quedan al
+final como `Otro`.
+
+Los complementos temporales usan la convención
+`NRO_PETICION_PLACA_DD_MM_AAAA_CAJA_FOLDER_CARPETA_RECURSO.pdf`. Al confirmar
+el registro se trasladan desde `Peticion/Pendientes` a `Peticion/AÑO` dentro de
+la carpeta del expediente, manteniendo sus subcarpetas por tipo documental.
+En la consulta del expediente se puede elegir entre el PDF completo unificado
+y un explorador individual de complementos.
 
 Los anexos pueden llegar sin fecha de petición. Si el expediente todavía no
 existe, se conservan en `PDFS Escaneados/Pendientes` y se pueden consultar por

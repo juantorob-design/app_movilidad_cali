@@ -1,5 +1,5 @@
 {
   "version": "1.1.15",
   "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.15/SistemaDesvinculaciones-Setup-1.1.15.exe",
-  "changelog": "Corrige la validación OAuth para respetar SISTEMA_OAUTH_PORT, validar el rango permitido y comprobar las URI exactas del puerto configurado. Mantiene el procesamiento físico de PDFs, OCR, IA local, pypdf y la gestión segura y opcional de Ollama."
+  "changelog": "Corrige la validación OAuth para respetar SISTEMA_OAUTH_PORT y agrega limpieza de páginas, nombres estándar de complementos, prelación administrativa para el PDF unificado y explorador individual de documentos. Mantiene OCR, IA local, pypdf y la gestión segura y opcional de Ollama."
 }
