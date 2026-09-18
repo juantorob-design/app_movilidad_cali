@@ -1,5 +1,5 @@
 {
-  "version": "1.1.16",
-  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.16/SistemaDesvinculaciones-Setup-1.1.16.exe",
-  "changelog": "Corrige las rutas de staging y traslado anual, agrega el enrutamiento inmediato de complementos hacia Por_vincular, reunificación automática por expediente y deduplicación mediante hash. Mantiene OCR, IA local, pypdf y la gestión segura y opcional de Ollama."
+  "version": "1.1.17",
+  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.17/SistemaDesvinculaciones-Setup-1.1.17.exe",
+  "changelog": "Corrige la actualización automática mediante un bootstrapper desacoplado en dos etapas, incorpora los nuevos iconos y mantiene las rutas documentales, OCR, IA local, reunificación y deduplicación."
 }

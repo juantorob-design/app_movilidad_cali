@@ -4330,7 +4330,10 @@ if actualizacion:
                 st.error("La versión nueva no tiene una URL de instalador válida.")
             else:
                 with st.spinner("Descargando y preparando la actualización..."):
-                    download_and_apply_update(actualizacion["download_url"])
+                    try:
+                        download_and_apply_update(actualizacion["download_url"])
+                    except (OSError, RuntimeError, ValueError, requests.RequestException) as error:
+                        st.error(f"No fue posible iniciar la actualización: {error}")
 
 rol_actual = datos_usuario.get("rol", "Sin Rol Asignado")
 estado_actual = datos_usuario.get("estado", "Pendiente")

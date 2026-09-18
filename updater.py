@@ -10,7 +10,7 @@ import time
 from urllib.parse import urlparse
 
 # Versión actual de la aplicación instalada
-CURRENT_VERSION = "1.1.16"
+CURRENT_VERSION = "1.1.17"
 
 # GitHub Raw será la fuente pública de versiones cuando el repositorio se publique.
 DEFAULT_VERSION_CHECK_URL = (
@@ -191,7 +191,7 @@ def buscar_desinstalador_instalado():
 
 
 def download_and_apply_update(download_url):
-    """Descarga el instalador, desinstala la versión anterior y ejecuta la instalación limpia."""
+    """Descarga y delega la actualización a un bootstrapper externo en dos etapas."""
     if not download_url:
         return
 
@@ -204,13 +204,14 @@ def download_and_apply_update(download_url):
     ):
         raise ValueError("La URL de actualización no pertenece a GitHub.")
 
+    carpeta_temporal = os.path.abspath(tempfile.gettempdir())
     instalador = os.path.join(
-        tempfile.gettempdir(),
+        carpeta_temporal,
         f"SistemaDesvinculaciones-update-{os.getpid()}.exe",
     )
     script_actualizacion = os.path.join(
-        tempfile.gettempdir(),
-        f"SistemaDesvinculaciones-update-{os.getpid()}.ps1",
+        carpeta_temporal,
+        f"SistemaDesvinculaciones-bootstrap-{os.getpid()}.ps1",
     )
     ejecutable = obtener_ruta_ejecutable()
 
@@ -230,8 +231,8 @@ def download_and_apply_update(download_url):
         if not desinstalador:
             desinstalador = os.path.join(os.path.dirname(ejecutable), "unins000.exe")
 
-        if os.path.exists(desinstalador):
-            exe_uninstalar, args_extra = _normalizar_uninstall_string(desinstalador)
+        exe_uninstalar, args_extra = _normalizar_uninstall_string(desinstalador)
+        if exe_uninstalar and os.path.exists(exe_uninstalar):
             uninstall_args = [*args_extra, '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART']
             if not args_extra:
                 uninstall_args = ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART']
@@ -266,6 +267,8 @@ Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
         with open(script_actualizacion, "w", encoding="utf-8") as f:
             f.write(script_content)
 
+        # Etapa 1: el proceso actual solo deja preparado el bootstrapper.
+        # Etapa 2: PowerShell espera, eleva y reemplaza la instalación.
         subprocess.Popen(
             [
                 "powershell.exe",
@@ -279,6 +282,8 @@ Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
             | subprocess.DETACHED_PROCESS
             | subprocess.CREATE_NO_WINDOW,
         )
+        time.sleep(2)
+        # os._exit evita que Streamlit mantenga módulos o archivos abiertos.
         os._exit(0)
 
     except (OSError, requests.RequestException):
