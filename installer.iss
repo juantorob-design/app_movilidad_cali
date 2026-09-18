@@ -60,6 +60,36 @@ begin
 end;
 
 function ShouldInstallOllama(): Boolean;
+var
+  InstalledMajor, InstalledMinor, InstalledRelease, InstalledBuild: Word;
+  BundleMajor, BundleMinor, BundleRelease, BundleBuild: Word;
 begin
-  Result := not OllamaExecutableExists();
+  if not OllamaExecutableExists() then
+  begin
+    Result := True;
+    exit;
+  end;
+  if not GetVersionComponents(
+    ExpandConstant('{localappdata}\Programs\Ollama\ollama.exe'),
+    InstalledMajor, InstalledMinor, InstalledRelease, InstalledBuild
+  ) then
+  begin
+    Result := False;
+    exit;
+  end;
+  if not GetVersionComponents(
+    ExpandConstant('{tmp}\OllamaSetup.exe'),
+    BundleMajor, BundleMinor, BundleRelease, BundleBuild
+  ) then
+  begin
+    Result := False;
+    exit;
+  end;
+  Result :=
+    (BundleMajor > InstalledMajor) or
+    ((BundleMajor = InstalledMajor) and (BundleMinor > InstalledMinor)) or
+    ((BundleMajor = InstalledMajor) and (BundleMinor = InstalledMinor) and
+      (BundleRelease > InstalledRelease)) or
+    ((BundleMajor = InstalledMajor) and (BundleMinor = InstalledMinor) and
+      (BundleRelease = InstalledRelease) and (BundleBuild > InstalledBuild));
 end;
