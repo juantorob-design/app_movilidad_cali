@@ -77,8 +77,8 @@ hiddenimports = [
     'clr',
 ] + collect_submodules('streamlit') + collect_submodules('streamlit_pdf') + collect_submodules('webview') + collect_submodules('openpyxl') + collect_submodules('googleapiclient') + collect_submodules('google_auth_oauthlib') + collect_submodules('PySide6') + collect_submodules('rapidocr_onnxruntime')
 
-# Resolver la ruta del icono para el ejecutable (.exe)
-icono_path = 'Icono.ico' if os.path.exists('Icono.ico') else os.path.join('images', 'logo.ico')
+# Usar el icono original del proyecto para el ejecutable.
+icono_path = os.path.join('images', 'icon.ico')
 icono_final = icono_path if os.path.exists(icono_path) else None
 
 a = Analysis(

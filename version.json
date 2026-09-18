@@ -1,5 +1,5 @@
 {
-  "version": "1.1.17",
-  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.17/SistemaDesvinculaciones-Setup-1.1.17.exe",
-  "changelog": "Corrige la actualización automática mediante un bootstrapper desacoplado en dos etapas, incorpora los nuevos iconos y mantiene las rutas documentales, OCR, IA local, reunificación y deduplicación."
+  "version": "1.1.18",
+  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.18/SistemaDesvinculaciones-Setup-1.1.18.exe",
+  "changelog": "Usa el icono original del proyecto y unifica la marca como Secretaría de Tránsito y Transporte - Desvinculaciones."
 }

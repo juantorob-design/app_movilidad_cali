@@ -1,4 +1,4 @@
-# Sistema de Desvinculaciones
+# Secretaría de Tránsito y Transporte - Desvinculaciones
 
 Aplicación de escritorio para gestionar expedientes de desvinculación administrativa,
 documentos digitalizados y sincronización con Google Drive y Google Sheets.

@@ -251,7 +251,8 @@ def render_image_action(img_path, label, href, target="_self", external=False):
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
-    page_title="Sistema de Desvinculaciones - Alcaldía de Cali",
+    page_title="Secretaría de Tránsito y Transporte - Desvinculaciones",
+    page_icon=obtener_ruta_imagen("icon.ico"),
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -4072,8 +4073,7 @@ if not st.session_state.get("logged_in", False):
                 st.image(IMG_LOGO, width=110)
         st.markdown("""
             <div class="header-box">
-                <div class="header-title">ALCALDÍA DE SANTIAGO DE CALI</div>
-                <div class="header-subtitle">SECRETARÍA DE TRÁNSITO Y TRANSPORTE — SISTEMA DE DESVINCULACIONES</div>
+                <div class="header-title">SECRETARÍA DE TRÁNSITO Y TRANSPORTE - DESVINCULACIONES</div>
             </div>
         """, unsafe_allow_html=True)
 
@@ -4362,7 +4362,7 @@ with st.sidebar:
         sidebar_logo_data = get_image_base64(IMG_LOGO)
         st.markdown(
             f'<div class="sidebar-brand"><img src="{sidebar_logo_data}" '
-            'alt="Logo Alcaldía de Santiago de Cali"></div>',
+            'alt="Secretaría de Tránsito y Transporte - Desvinculaciones"></div>',
             unsafe_allow_html=True,
         )
     st.markdown("### Sistema de desvinculaciones")
@@ -4398,13 +4398,12 @@ if st.session_state.navegacion == "Inicio":
         logo_data = get_image_base64(IMG_LOGO)
         st.markdown(
             f'<div class="brand-logo-wrap"><img class="brand-logo" src="{logo_data}" '
-            'alt="Logo Alcaldía de Santiago de Cali"></div>',
+            'alt="Secretaría de Tránsito y Transporte - Desvinculaciones"></div>',
             unsafe_allow_html=True,
         )
     st.markdown("""
         <div class="header-box">
-            <div class="header-title">ALCALDÍA DE SANTIAGO DE CALI</div>
-            <div class="header-subtitle">SECRETARÍA DE TRÁNSITO Y TRANSPORTE — SISTEMA DE DESVINCULACIONES</div>
+            <div class="header-title">SECRETARÍA DE TRÁNSITO Y TRANSPORTE - DESVINCULACIONES</div>
         </div>
     """, unsafe_allow_html=True)
 

@@ -59,7 +59,7 @@ def esperar_servidor(port=8501, timeout=60):
 
 def crear_aplicacion_qt(url_inicial):
     from PySide6.QtCore import QUrl, Qt, Signal
-    from PySide6.QtGui import QAction
+    from PySide6.QtGui import QAction, QIcon
     from PySide6.QtWidgets import (
         QApplication,
         QLabel,
@@ -107,7 +107,7 @@ def crear_aplicacion_qt(url_inicial):
     class NavegadorPrincipal(QMainWindow):
         def __init__(self):
             super().__init__()
-            self.setWindowTitle("Sistema de Desvinculaciones - Alcaldía de Cali")
+            self.setWindowTitle("Secretaría de Tránsito y Transporte - Desvinculaciones")
             self.resize(1440, 900)
             self.perfil = QWebEngineProfile(
                 "SistemaDesvinculaciones",
@@ -154,14 +154,11 @@ def crear_aplicacion_qt(url_inicial):
             )
             layout = QVBoxLayout(escritorio)
             layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            titulo = QLabel("ALCALDÍA DE SANTIAGO DE CALI")
+            titulo = QLabel("SECRETARÍA DE TRÁNSITO Y TRANSPORTE - DESVINCULACIONES")
             titulo.setObjectName("title")
-            subtitulo = QLabel("SISTEMA DE DESVINCULACIONES")
-            subtitulo.setObjectName("subtitle")
             boton = QPushButton("Abrir escritorio de trabajo")
             boton.clicked.connect(self.mostrar_sistema)
             layout.addWidget(titulo, alignment=Qt.AlignmentFlag.AlignCenter)
-            layout.addWidget(subtitulo, alignment=Qt.AlignmentFlag.AlignCenter)
             layout.addSpacing(26)
             layout.addWidget(boton, alignment=Qt.AlignmentFlag.AlignCenter)
             return escritorio
@@ -290,8 +287,13 @@ def crear_aplicacion_qt(url_inicial):
             self.mostrar_sistema()
 
     aplicacion = QApplication.instance() or QApplication(sys.argv)
-    aplicacion.setApplicationName("Sistema de Desvinculaciones")
+    aplicacion.setApplicationName("Secretaría de Tránsito y Transporte - Desvinculaciones")
+    ruta_icono = resolver_ruta(os.path.join("images", "icon.ico"))
+    if os.path.exists(ruta_icono):
+        aplicacion.setWindowIcon(QIcon(ruta_icono))
     ventana = NavegadorPrincipal()
+    if os.path.exists(ruta_icono):
+        ventana.setWindowIcon(QIcon(ruta_icono))
     ventana.showMaximized()
     return aplicacion.exec()
 

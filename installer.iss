@@ -1,6 +1,6 @@
-#define MyAppName "Sistema de Desvinculaciones"
-#define MyAppVersion "1.1.17"
-#define MyAppPublisher "Sistema de Desvinculaciones"
+#define MyAppName "Secretaría de Tránsito y Transporte - Desvinculaciones"
+#define MyAppVersion "1.1.18"
+#define MyAppPublisher "Secretaría de Tránsito y Transporte"
 #define MyAppExeName "SistemaDesvinculaciones.exe"
 
 [Setup]
@@ -17,7 +17,7 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64compatible
-SetupIconFile=Icono.ico
+SetupIconFile=images\icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 CloseApplications=yes
 RestartApplications=no
@@ -30,10 +30,11 @@ Type: filesandordirs; Name: "{app}\*"
 
 [Files]
 Source: "dist\SistemaDesvinculaciones\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "images\icon.ico"; DestDir: "{app}\images"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\images\icon.ico"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\images\icon.ico"
 
 ; La aplicación se abre manualmente desde el acceso directo del menú de inicio.
 ; Evitamos iniciar el proceso desde el instalador para no generar el error

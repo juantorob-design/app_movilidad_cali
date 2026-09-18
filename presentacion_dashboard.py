@@ -38,8 +38,8 @@ st.markdown(
 st.markdown(
     """
     <div class="hero">
-      <h1>Sistema de Desvinculaciones</h1>
-      <p>Presentación ejecutiva · Alcaldía de Santiago de Cali</p>
+      <h1>Secretaría de Tránsito y Transporte - Desvinculaciones</h1>
+      <p>Presentación ejecutiva</p>
     </div>
     """,
     unsafe_allow_html=True,
