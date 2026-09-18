@@ -191,7 +191,7 @@ def buscar_desinstalador_instalado():
 
 
 def download_and_apply_update(download_url):
-    """Descarga y delega la actualización a un bootstrapper externo en dos etapas."""
+    """Actualiza solo {app}; los modelos nativos de Ollama quedan intactos."""
     if not download_url:
         return
 

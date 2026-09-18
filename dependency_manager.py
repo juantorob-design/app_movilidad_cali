@@ -13,6 +13,8 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
@@ -32,6 +34,14 @@ OLLAMA_MANIFEST_URL = os.environ.get("SISTEMA_OLLAMA_MANIFEST_URL", "").strip()
 ALLOWED_MANIFEST_HOSTS = {
     "raw.githubusercontent.com",
     "github.com",
+}
+
+_pull_lock = threading.Lock()
+_pull_status = {
+    "running": False,
+    "message": "",
+    "error": "",
+    "model": "",
 }
 
 
@@ -68,6 +78,96 @@ def obtener_modelos_ollama(ollama_path: str | None = None) -> list[str]:
         for linea in resultado.stdout.splitlines()[1:]
         if linea.split()
     ]
+
+
+def servicio_ollama_activo() -> bool:
+    """Comprueba el servicio HTTP local sin enviar contenido documental."""
+    try:
+        response = requests.get("http://127.0.0.1:11434/api/tags", timeout=3)
+        return response.ok
+    except requests.RequestException:
+        return False
+
+
+def iniciar_servicio_ollama() -> bool:
+    """Inicia `ollama serve` desacoplado si el binario está instalado."""
+    ejecutable = buscar_ollama()
+    if not ejecutable or servicio_ollama_activo():
+        return bool(ejecutable)
+    try:
+        subprocess.Popen(
+            [ejecutable, "serve"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0),
+        )
+    except OSError:
+        return False
+    for _ in range(10):
+        if servicio_ollama_activo():
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def estado_descarga_modelo() -> dict:
+    """Devuelve el último estado conocido de una descarga en segundo plano."""
+    with _pull_lock:
+        return dict(_pull_status)
+
+
+def descargar_modelo_en_segundo_plano(
+    modelo: str = OLLAMA_MODEL,
+    progreso: Callable[[str], None] | None = None,
+) -> bool:
+    """Inicia `ollama pull` sin bloquear el hilo de Streamlit."""
+    with _pull_lock:
+        if _pull_status["running"]:
+            return False
+        _pull_status.update(
+            running=True,
+            message=f"Descargando {modelo}...",
+            error="",
+            model=modelo,
+        )
+
+    def ejecutar():
+        try:
+            ejecutable = buscar_ollama()
+            if not ejecutable:
+                raise FileNotFoundError("Ollama no está instalado en este equipo.")
+            proceso = subprocess.Popen(
+                [ejecutable, "pull", modelo],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if proceso.stdout:
+                for linea in proceso.stdout:
+                    mensaje = linea.strip()
+                    if mensaje:
+                        with _pull_lock:
+                            _pull_status["message"] = mensaje
+                        if progreso:
+                            progreso(mensaje)
+            codigo = proceso.wait()
+            if codigo != 0:
+                raise RuntimeError(f"Ollama no pudo descargar el modelo {modelo}.")
+            with _pull_lock:
+                _pull_status["message"] = f"Modelo {modelo} descargado correctamente."
+        except (OSError, subprocess.SubprocessError, RuntimeError) as error:
+            with _pull_lock:
+                _pull_status["error"] = str(error)
+        finally:
+            with _pull_lock:
+                _pull_status["running"] = False
+
+    threading.Thread(target=ejecutar, name="ollama-pull", daemon=True).start()
+    return True
 
 
 def descargar_modelo(

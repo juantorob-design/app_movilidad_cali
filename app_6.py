@@ -94,12 +94,18 @@ try:
         OLLAMA_MODEL as OLLAMA_REQUIRED_MODEL,
         buscar_ollama,
         descargar_modelo,
+        descargar_modelo_en_segundo_plano,
+        estado_descarga_modelo,
+        iniciar_servicio_ollama,
         obtener_modelos_ollama,
     )
 except ImportError:
     OLLAMA_REQUIRED_MODEL = OLLAMA_MODEL
     buscar_ollama = lambda: None
     descargar_modelo = None
+    descargar_modelo_en_segundo_plano = lambda *args, **kwargs: False
+    estado_descarga_modelo = lambda: {"running": False, "message": "", "error": ""}
+    iniciar_servicio_ollama = lambda: False
     obtener_modelos_ollama = lambda: []
 
 _ocr_engine = None
@@ -205,6 +211,19 @@ def inicializar_memoria_local():
 
 
 inicializar_memoria_local()
+
+
+def iniciar_ollama_en_segundo_plano():
+    """Prepara el servicio local sin retrasar el arranque de Streamlit."""
+    if buscar_ollama():
+        threading.Thread(
+            target=iniciar_servicio_ollama,
+            name="ollama-serve",
+            daemon=True,
+        ).start()
+
+
+iniciar_ollama_en_segundo_plano()
 
 
 def obtener_ruta_imagen(nombre_archivo):
@@ -4903,29 +4922,27 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
             if ollama_disponible():
                 modelos_locales = obtener_modelos_ollama()
                 if OLLAMA_REQUIRED_MODEL not in modelos_locales:
-                    st.warning(
-                        f"El modelo `{OLLAMA_REQUIRED_MODEL}` todavía no está descargado."
-                    )
-                    if st.button(
-                        f"Descargar modelo {OLLAMA_REQUIRED_MODEL}",
-                        key=f"descargar_modelo_ia_{carga_id}",
-                    ):
-                        mensajes_modelo = []
-                        try:
-                            with st.spinner(
-                                f"Descargando {OLLAMA_REQUIRED_MODEL} de forma local..."
-                            ):
-                                descargar_modelo(
-                                    OLLAMA_REQUIRED_MODEL,
-                                    mensajes_modelo.append,
+                    clave_pull = f"ollama_pull_iniciado_{carga_id}"
+                    if not st.session_state.get(clave_pull):
+                        if descargar_modelo_en_segundo_plano(OLLAMA_REQUIRED_MODEL):
+                                st.session_state[clave_pull] = True
+                                st.info(
+                                    f"Ollama está descargando `{OLLAMA_REQUIRED_MODEL}` "
+                                    "en segundo plano. Puedes continuar revisando el formulario."
                                 )
-                                st.session_state.pop(
-                                    f"analisis_ia_local_intento_{carga_id}",
-                                    None,
-                                )
-                                st.success("Modelo local descargado correctamente.")
-                        except (FileNotFoundError, RuntimeError) as error:
-                            st.error(str(error))
+                    estado_pull = estado_descarga_modelo()
+                    if estado_pull.get("running"):
+                        st.info(str(estado_pull.get("message") or "Descargando modelo local..."))
+                    elif estado_pull.get("error"):
+                        st.warning(
+                                f"No fue posible descargar automáticamente el modelo: "
+                                f"{estado_pull['error']}"
+                        )
+                    else:
+                        st.warning(
+                                f"El modelo `{OLLAMA_REQUIRED_MODEL}` todavía no está disponible. "
+                                "La descarga automática quedó iniciada en segundo plano."
+                        )
                 st.caption(
                     "El análisis estructurado se ejecuta automáticamente después del OCR. "
                     "Los campos ya confirmados conservan prioridad."
