@@ -4776,6 +4776,8 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 and not st.session_state.get(clave_intento_ia)
             ):
                 st.session_state[clave_intento_ia] = True
+                if buscar_ollama():
+                    iniciar_servicio_ollama()
                 if ollama_disponible():
                     modelos_locales = obtener_modelos_ollama()
                     if OLLAMA_REQUIRED_MODEL in modelos_locales:

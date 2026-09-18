@@ -59,18 +59,30 @@ begin
     FileExists(ExpandConstant('{pf}\Ollama\ollama.exe'));
 end;
 
+function OllamaExecutablePath(): String;
+begin
+  if FileExists(ExpandConstant('{localappdata}\Programs\Ollama\ollama.exe')) then
+    Result := ExpandConstant('{localappdata}\Programs\Ollama\ollama.exe')
+  else if FileExists(ExpandConstant('{pf}\Ollama\ollama.exe')) then
+    Result := ExpandConstant('{pf}\Ollama\ollama.exe')
+  else
+    Result := '';
+end;
+
 function ShouldInstallOllama(): Boolean;
 var
   InstalledMajor, InstalledMinor, InstalledRelease, InstalledBuild: Word;
   BundleMajor, BundleMinor, BundleRelease, BundleBuild: Word;
+  InstalledPath: String;
 begin
   if not OllamaExecutableExists() then
   begin
     Result := True;
     exit;
   end;
+  InstalledPath := OllamaExecutablePath();
   if not GetVersionComponents(
-    ExpandConstant('{localappdata}\Programs\Ollama\ollama.exe'),
+    InstalledPath,
     InstalledMajor, InstalledMinor, InstalledRelease, InstalledBuild
   ) then
   begin
