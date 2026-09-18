@@ -12,6 +12,15 @@ datas += collect_data_files('streamlit_pdf')
 datas += collect_data_files('webview')
 datas += collect_data_files('googleapiclient')
 
+# RapidOCR carga config.yaml y otros recursos en tiempo de ejecución. Los
+# hooks de PyInstaller no siempre los detectan al analizar la importación.
+try:
+    import rapidocr_onnxruntime
+    rapidocr_path = os.path.dirname(rapidocr_onnxruntime.__file__)
+    datas.append((rapidocr_path, 'rapidocr_onnxruntime'))
+except (ImportError, AttributeError, TypeError):
+    pass
+
 # Incluir metadatos de paquetes requeridos
 datas += copy_metadata('streamlit')
 datas += copy_metadata('pywebview')

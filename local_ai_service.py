@@ -29,6 +29,18 @@ principales y conserva la trazabilidad de cada dato.
 
 Devuelve exclusivamente JSON válido con estas claves:
 {
+  "radicado_padre": "",
+  "placa": "",
+  "fecha_solicitud": "YYYY-MM-DD",
+  "fecha_notificacion": "YYYY-MM-DD",
+  "tipo_caso": "Con recurso|Sin recurso|Desistimiento|Por confirmar",
+  "solicitante": "",
+  "empresa": "",
+  "nit": "",
+  "propietario": "",
+  "cedula": "",
+  "fecha_resolucion": "YYYY-MM-DD",
+  "fecha_recurso": "YYYY-MM-DD",
   "resumen_ejecutivo": "string",
   "datos_identificados": [{"campo": "string", "valor": "string", "evidencia": "string"}],
   "trazabilidad_temporal": [{"fecha": "string", "hito": "string", "evidencia": "string"}],
@@ -40,6 +52,21 @@ Devuelve exclusivamente JSON válido con estas claves:
   "faltantes": ["string"]
 }
 """
+
+FORMULARIO_CAMPOS = (
+    "radicado_padre",
+    "placa",
+    "fecha_solicitud",
+    "fecha_notificacion",
+    "tipo_caso",
+    "solicitante",
+    "empresa",
+    "nit",
+    "propietario",
+    "cedula",
+    "fecha_resolucion",
+    "fecha_recurso",
+)
 
 
 def ollama_disponible() -> bool:
@@ -146,3 +173,13 @@ def analisis_a_markdown(resultado: dict[str, Any]) -> str:
     if faltantes:
         lineas.extend(["", "## Faltantes", *[f"- {item}" for item in faltantes]])
     return "\n".join(lineas)
+
+
+def campos_formulario_desde_ia(resultado: dict[str, Any]) -> dict[str, str]:
+    """Extrae solo los campos del formulario con valores simples y trazables."""
+    campos = {}
+    for campo in FORMULARIO_CAMPOS:
+        valor = resultado.get(campo)
+        if isinstance(valor, (str, int, float)) and str(valor).strip():
+            campos[campo] = str(valor).strip()
+    return campos

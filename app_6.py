@@ -79,6 +79,7 @@ try:
         OLLAMA_DOWNLOAD_URL,
         analizar_expediente_local,
         analisis_a_markdown,
+        campos_formulario_desde_ia,
         ollama_disponible,
     )
 except ImportError:
@@ -86,6 +87,7 @@ except ImportError:
     OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
     analizar_expediente_local = None
     analisis_a_markdown = None
+    campos_formulario_desde_ia = lambda resultado: {}
     ollama_disponible = lambda: False
 try:
     from dependency_manager import (
@@ -2074,6 +2076,20 @@ def combinar_datos_detectados(destino, nuevos):
             if len(nuevo_limpio) > len(actual_limpio):
                 destino[campo] = valor
         elif len(str(valor)) > len(str(actual)):
+            destino[campo] = valor
+    return destino
+
+
+def combinar_campos_ia(destino, resultado_ia):
+    """Completa campos ausentes con la extracción local, sin sobrescribir evidencia."""
+    if not resultado_ia or campos_formulario_desde_ia is None:
+        return destino
+    campos_ia = campos_formulario_desde_ia(resultado_ia)
+    for campo, valor in campos_ia.items():
+        if campo == "tipo_caso":
+            if valor in TIPOS_CASO and not destino.get(campo):
+                destino[campo] = valor
+        elif not destino.get(campo):
             destino[campo] = valor
     return destino
 
@@ -4725,10 +4741,63 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     "Si el PDF es un escaneo como imagen, completa los campos "
                     "manualmente o habilita OCR en el equipo."
                 )
+            # Ollama se ejecuta automáticamente una sola vez por carga. El
+            # resultado se conserva en session_state para evitar repetir el
+            # análisis en cada rerun de Streamlit.
+            clave_ia = f"analisis_ia_local_{carga_id}"
+            clave_intento_ia = f"analisis_ia_local_intento_{carga_id}"
+            texto_ocr_completo = normalizar_texto_documento(
+                " ".join(textos_analizados.values())
+            )
+            if (
+                analizar_expediente_local is not None
+                and analisis_a_markdown is not None
+                and texto_ocr_completo
+                and not st.session_state.get(clave_ia)
+                and not st.session_state.get(clave_intento_ia)
+            ):
+                st.session_state[clave_intento_ia] = True
+                if ollama_disponible():
+                    modelos_locales = obtener_modelos_ollama()
+                    if OLLAMA_REQUIRED_MODEL in modelos_locales:
+                        try:
+                            with st.spinner(
+                                f"La IA local está extrayendo datos con {OLLAMA_REQUIRED_MODEL}..."
+                            ):
+                                resultado_ia = analizar_expediente_local(
+                                    texto_ocr_completo,
+                                    modelo=OLLAMA_REQUIRED_MODEL,
+                                )
+                            st.session_state[clave_ia] = resultado_ia
+                            combinar_campos_ia(datos_carga, resultado_ia)
+                            st.success(
+                                "Ollama completó automáticamente los campos disponibles. "
+                                "Revisa la evidencia antes de guardar."
+                            )
+                        except (ConnectionError, TimeoutError, ValueError) as error:
+                            st.warning(
+                                f"Ollama no pudo completar la extracción automática: {error}. "
+                                "Se conserva el OCR y el respaldo por expresiones regulares."
+                            )
+                    else:
+                        st.warning(
+                            f"Ollama está activo, pero el modelo `{OLLAMA_REQUIRED_MODEL}` "
+                            "no está descargado. Se usará el OCR y el respaldo por regex."
+                        )
+                else:
+                    st.warning(
+                        "Ollama no está disponible en localhost. Se usará el OCR y el "
+                        "respaldo por expresiones regulares."
+                    )
+            resultado_ia_automatico = st.session_state.get(clave_ia)
+            if resultado_ia_automatico:
+                combinar_campos_ia(datos_carga, resultado_ia_automatico)
             tipo_caso_detectado = clasificar_tipo_caso(
                 " ".join(textos_analizados.values()),
                 " ".join(archivo.name for archivo in archivos_canvas),
             )
+            if tipo_caso_detectado not in TIPOS_CASO:
+                tipo_caso_detectado = datos_carga.get("tipo_caso", "")
             ruta_documento = enrutar_documento_cargado(
                 datos_carga,
                 es_complemento=not peticion_incluida,
@@ -4850,27 +4919,17 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                     OLLAMA_REQUIRED_MODEL,
                                     mensajes_modelo.append,
                                 )
-                            st.success("Modelo local descargado correctamente.")
+                                st.session_state.pop(
+                                    f"analisis_ia_local_intento_{carga_id}",
+                                    None,
+                                )
+                                st.success("Modelo local descargado correctamente.")
                         except (FileNotFoundError, RuntimeError) as error:
                             st.error(str(error))
-                if st.button(
-                    "Analizar expediente con IA local",
-                    key=f"analizar_ia_local_{carga_id}",
-                    type="secondary",
-                ):
-                    if analizar_expediente_local is None or analisis_a_markdown is None:
-                        st.error("El módulo de IA local no está disponible en esta instalación.")
-                    else:
-                        with st.spinner("La IA local está analizando el expediente..."):
-                            try:
-                                resultado_ia = analizar_expediente_local(
-                                    normalizar_texto_documento(
-                                        " ".join(textos_analizados.values())
-                                    )
-                                )
-                                st.session_state[f"analisis_ia_local_{carga_id}"] = resultado_ia
-                            except (ConnectionError, ValueError) as error:
-                                st.error(str(error))
+                st.caption(
+                    "El análisis estructurado se ejecuta automáticamente después del OCR. "
+                    "Los campos ya confirmados conservan prioridad."
+                )
             else:
                 st.info(
                     "IA local no disponible todavía. Instala Ollama, inicia su servicio "
