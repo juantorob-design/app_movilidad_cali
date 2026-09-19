@@ -40,9 +40,9 @@ archivos_proyecto = [
 if os.path.exists('credentials.json'):
     archivos_proyecto.append(('credentials.json', '.'))
 
-# Incluir archivos opcionales si existen en la raíz
-if os.path.exists('Icono.ico'):
-    archivos_proyecto.append(('Icono.ico', '.'))
+# Icono oficial creado para el proyecto.
+if os.path.exists('icon.ico'):
+    archivos_proyecto.append(('icon.ico', '.'))
 
 if os.path.exists('.streamlit'):
     archivos_proyecto.append(('.streamlit', '.streamlit'))
@@ -93,8 +93,8 @@ hiddenimports = [
     'clr',
 ] + collect_submodules('streamlit') + collect_submodules('streamlit_pdf') + collect_submodules('webview') + collect_submodules('openpyxl') + collect_submodules('googleapiclient') + collect_submodules('google_auth_oauthlib') + collect_submodules('PySide6') + collect_submodules('rapidocr_onnxruntime')
 
-# Usar el icono original del proyecto para el ejecutable.
-icono_path = os.path.join('images', 'icon.ico')
+# Usar el icono oficial de la raíz para el ejecutable.
+icono_path = 'icon.ico'
 icono_final = icono_path if os.path.exists(icono_path) else None
 
 a = Analysis(

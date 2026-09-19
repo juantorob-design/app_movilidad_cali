@@ -303,7 +303,7 @@ def render_image_action(img_path, label, href, target="_self", external=False):
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
     page_title="Secretaría de Tránsito y Transporte - Desvinculaciones",
-    page_icon=obtener_ruta_imagen("icon.ico"),
+    page_icon=resolver_ruta("icon.ico"),
     layout="wide",
     initial_sidebar_state="collapsed",
 )

@@ -23,7 +23,7 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64compatible
-SetupIconFile=images\icon.ico
+SetupIconFile=icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 CloseApplications=yes
 RestartApplications=no
@@ -36,7 +36,7 @@ Type: filesandordirs; Name: "{app}\*"
 
 [Files]
 Source: "dist\SistemaDesvinculaciones\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "images\icon.ico"; DestDir: "{app}\images"; Flags: ignoreversion
+Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 #ifdef HasOllamaInstaller
 Source: "OllamaSetup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 #endif
@@ -50,8 +50,8 @@ Filename: "{tmp}\OllamaSetup.exe"; Parameters: "/silent"; Flags: runhidden waitu
 #endif
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\images\icon.ico"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\images\icon.ico"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\icon.ico"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\icon.ico"
 #ifdef HasPdfEditor
 Name: "{group}\Editor PDF local"; Filename: "{app}\EditorPDFLocal\EditorPDFLocal.exe"; WorkingDir: "{app}\EditorPDFLocal"
 #endif

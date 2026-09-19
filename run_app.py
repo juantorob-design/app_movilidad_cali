@@ -288,7 +288,7 @@ def crear_aplicacion_qt(url_inicial):
 
     aplicacion = QApplication.instance() or QApplication(sys.argv)
     aplicacion.setApplicationName("Secretaría de Tránsito y Transporte - Desvinculaciones")
-    ruta_icono = resolver_ruta(os.path.join("images", "icon.ico"))
+    ruta_icono = resolver_ruta("icon.ico")
     if os.path.exists(ruta_icono):
         aplicacion.setWindowIcon(QIcon(ruta_icono))
     ventana = NavegadorPrincipal()
