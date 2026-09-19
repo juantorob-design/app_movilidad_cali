@@ -39,16 +39,29 @@ Devuelve exclusivamente JSON válido con estas claves:
   "nit": "",
   "propietario": "",
   "cedula": "",
+  "direccion_empresa": "",
+  "direccion_propietario": "",
+  "nueva_empresa": "",
+  "funcionario": "",
+  "correo": "",
+  "resolucion": "",
+  "tipo_notificacion": "",
+  "recurso": "",
   "fecha_resolucion": "YYYY-MM-DD",
   "fecha_recurso": "YYYY-MM-DD",
+  "fecha_ejecutoria": "YYYY-MM-DD",
+  "fecha_remision_registro": "YYYY-MM-DD",
+  "ubicacion": "",
   "resumen_ejecutivo": "string",
   "datos_identificados": [{"campo": "string", "valor": "string", "evidencia": "string"}],
   "trazabilidad_temporal": [{"fecha": "string", "hito": "string", "evidencia": "string"}],
   "analisis_fondo_decision": "string",
-  "tipo_caso": "Con recurso|Sin recurso|Desistimiento|Por confirmar",
   "estado_carga": "Expediente completo|Complemento",
   "paginas_por_seccion": [{"tipo": "string", "paginas": [1, 2]}],
-  "documentos_detectados": [{"tipo": "string", "paginas_o_evidencia": "string"}],
+  "documentos_detectados": [{
+    "tipo": "Solicitud|Consulta QX|Resolución|Requerimiento|Oficio de citación|Notificación personal|Notificación por aviso|Notificación por publicación web|Recurso|Resolución del recurso|Citación del recurso|Notificación del recurso|Constancia de ejecutoria|Remisión a registro|Desistimiento|Otro",
+    "paginas_o_evidencia": "string"
+  }],
   "faltantes": ["string"]
 }
 """
@@ -64,8 +77,19 @@ FORMULARIO_CAMPOS = (
     "nit",
     "propietario",
     "cedula",
+    "direccion_empresa",
+    "direccion_propietario",
+    "nueva_empresa",
+    "funcionario",
+    "correo",
+    "resolucion",
+    "tipo_notificacion",
+    "recurso",
     "fecha_resolucion",
     "fecha_recurso",
+    "fecha_ejecutoria",
+    "fecha_remision_registro",
+    "ubicacion",
 )
 
 

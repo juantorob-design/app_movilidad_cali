@@ -243,17 +243,22 @@ def inicializar_memoria_local():
 inicializar_memoria_local()
 
 
-def iniciar_ollama_en_segundo_plano():
-    """Prepara el servicio local sin retrasar el arranque de Streamlit."""
-    if buscar_ollama():
-        threading.Thread(
-            target=iniciar_servicio_ollama,
-            name="ollama-serve",
-            daemon=True,
-        ).start()
+def preparar_ollama_en_segundo_plano():
+    """Inicia Ollama y prepara el modelo requerido sin bloquear Streamlit."""
+    if not buscar_ollama():
+        return
+    if not iniciar_servicio_ollama():
+        return
+    if OLLAMA_REQUIRED_MODEL in obtener_modelos_ollama():
+        return
+    descargar_modelo_en_segundo_plano(OLLAMA_REQUIRED_MODEL)
 
 
-iniciar_ollama_en_segundo_plano()
+threading.Thread(
+    target=preparar_ollama_en_segundo_plano,
+    name="ollama-setup",
+    daemon=True,
+).start()
 
 
 def obtener_ruta_imagen(nombre_archivo):
@@ -580,7 +585,10 @@ DOCUMENTOS_REQUERIDOS_POR_CASO = {
         "Notificación",
         "Recurso",
         "Resolución del recurso",
+        "Citación del recurso",
+        "Notificación del recurso",
         "Constancia de ejecutoria",
+        "Remisión a registro",
     },
     "Sin recurso": {
         "Solicitud",
@@ -589,6 +597,7 @@ DOCUMENTOS_REQUERIDOS_POR_CASO = {
         "Oficio de citación",
         "Notificación",
         "Constancia de ejecutoria",
+        "Remisión a registro",
     },
     "Desistimiento": {"Solicitud", "Consulta QX", "Desistimiento"},
 }
@@ -613,6 +622,36 @@ DOCUMENTOS_BASE_POR_CASO = {
         "Constancia de ejecutoria",
     ),
     "Desistimiento": ("Solicitud", "Consulta QX", "Desistimiento"),
+}
+
+CHECKLIST_GRUPOS_POR_CASO = {
+    "Con recurso": (
+        ("Solicitud",),
+        ("Consulta QX",),
+        ("Resolución", "Requerimiento"),
+        ("Oficio de citación",),
+        ("Notificación personal", "Notificación por aviso", "Notificación por publicación web", "Notificación"),
+        ("Recurso",),
+        ("Resolución del recurso",),
+        ("Citación del recurso",),
+        ("Notificación del recurso",),
+        ("Constancia de ejecutoria",),
+        ("Remisión a registro",),
+    ),
+    "Sin recurso": (
+        ("Solicitud",),
+        ("Consulta QX",),
+        ("Resolución", "Requerimiento"),
+        ("Oficio de citación",),
+        ("Notificación personal", "Notificación por aviso", "Notificación por publicación web", "Notificación"),
+        ("Constancia de ejecutoria",),
+        ("Remisión a registro",),
+    ),
+    "Desistimiento": (
+        ("Solicitud",),
+        ("Consulta QX",),
+        ("Desistimiento",),
+    ),
 }
 
 ORDEN_DOCUMENTAL_PRELACION = (
@@ -2131,17 +2170,43 @@ def combinar_datos_detectados(destino, nuevos):
 
 
 def combinar_campos_ia(destino, resultado_ia):
-    """Completa campos ausentes con la extracción local, sin sobrescribir evidencia."""
+    """Completa campos y reemplaza únicamente lecturas OCR evidentemente corruptas."""
     if not resultado_ia or campos_formulario_desde_ia is None:
         return destino
     campos_ia = campos_formulario_desde_ia(resultado_ia)
     for campo, valor in campos_ia.items():
         if campo == "tipo_caso":
-            if valor in TIPOS_CASO and not destino.get(campo):
+            if valor in TIPOS_CASO and valor != "Detección automática":
                 destino[campo] = valor
-        elif not destino.get(campo):
+        elif (
+            not destino.get(campo)
+            or (
+                campo in {
+                    "empresa",
+                    "propietario",
+                    "direccion_empresa",
+                    "direccion_propietario",
+                }
+                and valor_ocr_sospechoso(destino.get(campo))
+            )
+        ):
             destino[campo] = valor
     return destino
+
+
+def valor_ocr_sospechoso(valor):
+    """Detecta residuos de interfaz o etiquetas que no son datos administrativos."""
+    texto = normalizar_texto_documento(valor).lower()
+    if not texto:
+        return False
+    patrones = (
+        r"\bde\s*:\s*mi\s+preferencia\b",
+        r"\b(?:identificacion|identificación)\s+doc\b",
+        r"\b(?:nombres?|apellidos?)\s*/?\s*(?:emp|pan)\b",
+        r"\bobligaciones\b",
+        r"\bseleccione\b|\bseleccionar\b",
+    )
+    return any(re.search(patron, texto) for patron in patrones)
 
 
 def normalizar_identificador(valor):
@@ -2779,7 +2844,7 @@ def clasificar_tipo_documento(texto, tipo_fallback):
             (14, r"citaci[oó]n\s+del\s+recurso|citacion\s+del\s+recurso"),
         ],
         "Notificación del recurso": [
-            (14, r"notificaci[oó]n\s+del\s+recurso|notificacion\s+del\s+recurso"),
+            (14, r"notificaci[oó]n\s+(?:del|de la)\s+recurso|notificacion\s+(?:del|de la)\s+recurso"),
         ],
         "Resolución": [
             (10, r"\bresoluci[oó]n\b|\bresolucion\b\s*(?:no|n[°ºo])?\s*[:#\-.]?\s*\w+"),
@@ -2837,16 +2902,19 @@ def tipos_documentales_detectados(texto, tipo_fallback):
     evidencia = normalizar_errores_ocr(texto).lower()
     reglas = [
         ("Desistimiento", r"desistim|desiste"),
-        ("Recurso", r"\brecurso\b|reposici[oó]n|reposicion|apelaci[oó]n|apelacion|impugn"),
+        ("Recurso", r"\brecurso\b|reposici[oó]n|reposicion|apelaci[oó]n|apelacion|impugn|interpone\s+recurso|recurre"),
         ("Resolución del recurso", r"resoluci[oó]n\s+del\s+recurso|resolucion\s+del\s+recurso|recurso\s+resuelto"),
+        ("Citación del recurso", r"citaci[oó]n\s+(?:del|de la)\s+recurso|citacion\s+(?:del|de la)\s+recurso"),
+        ("Notificación del recurso", r"notificaci[oó]n\s+(?:del|de la)\s+recurso|notificacion\s+(?:del|de la)\s+recurso"),
         ("Resolución", r"\bresoluci[oó]n\b|\bresolucion\b|acto\s+administrativo|resuelve"),
         ("Requerimiento", r"requerimient[oó]|requerimiento"),
         ("Oficio de citación", r"oficio\s+de\s+citaci[oó]n|citaci[oó]n\s+al\s+propietario|citaci[oó]n\s+de\s+la\s+empresa|citacion\s+al\s+propietario"),
         ("Notificación personal", r"notificaci[oó]n\s+personal|notificacion\s+personal|personalmente\s+notificado"),
         ("Notificación por aviso", r"notificaci[oó]n\s+por\s+aviso|notificacion\s+por\s+aviso|aviso\s+de\s+notificaci"),
         ("Notificación por publicación web", r"notificaci[oó]n\s+por\s+publicaci[oó]n\s+web|notificacion\s+por\s+publicacion\s+web|publicaci[oó]n\s+web"),
-        ("Notificación", r"notificaci[oó]n|notificacion|c[ií]taci[oó]n|citacion|citado|aviso|publicaci[oó]n"),
+        ("Notificación", r"\bnotificaci[oó]n\b|\bnotificacion\b"),
         ("Constancia de ejecutoria", r"ejecutoria|firmeza|constancia.*firme"),
+        ("Remisión a registro", r"remisi[oó]n\s+(?:a|al)\s+registro|registro\s+automotor|remitir\s+al\s+registro"),
         ("Consulta QX", r"consulta\s+de\s+verificaci[oó]n\s+de\s+propiedad|consulta\s+de\s+propiedad|verificaci[oó]n\s+de\s+propiedad|consulta\s+qx|verificaci[oó]n\s+qx"),
         ("Solicitud", r"derecho de petici[oó]n|derecho de peticion|solicito|solicitud|petici[oó]n|peticion"),
     ]
@@ -2862,7 +2930,80 @@ def tipos_documentales_detectados(texto, tipo_fallback):
             )
         )
     }
+    tipos_especificos = {
+        "Notificación personal",
+        "Notificación por aviso",
+        "Notificación por publicación web",
+    }
+    if detectados & tipos_especificos:
+        detectados.discard("Notificación")
     return detectados or {tipo_fallback}
+
+
+def normalizar_tipo_documental(valor):
+    """Convierte variantes OCR/IA al nombre documental canónico del checklist."""
+    texto = normalizar_errores_ocr(valor).lower()
+    texto = re.sub(r"\s+", " ", texto).strip()
+    if not texto:
+        return ""
+    if re.search(r"desistim|desiste", texto):
+        return "Desistimiento"
+    if re.search(r"consulta.*(?:qx|propiedad)|verificaci[oó]n.*(?:qx|propiedad)|\bqx\b|\brunt\b", texto):
+        return "Consulta QX"
+    if re.search(r"resoluci[oó]n.*recurso|recurso.*resuelto", texto):
+        return "Resolución del recurso"
+    if re.search(r"citaci[oó]n.*recurso", texto):
+        return "Citación del recurso"
+    if re.search(r"notificaci[oó]n.*recurso", texto):
+        return "Notificación del recurso"
+    if re.search(r"remisi[oó]n.*registro|registro automotor|remitir.*registro", texto):
+        return "Remisión a registro"
+    if re.search(r"constancia.*ejecutoria|constancia.*firmeza|\bejecutoria\b|\bfirmeza\b", texto):
+        return "Constancia de ejecutoria"
+    if re.search(r"notificaci[oó]n.*personal|personalmente notificado", texto):
+        return "Notificación personal"
+    if re.search(r"notificaci[oó]n.*aviso|aviso de notificaci[oó]n", texto):
+        return "Notificación por aviso"
+    if re.search(r"notificaci[oó]n.*(?:publicaci[oó]n|web)|publicaci[oó]n.*web|edicto", texto):
+        return "Notificación por publicación web"
+    if re.search(r"\bnotificaci[oó]n\b|\bnotificacion\b", texto):
+        return "Notificación"
+    if re.search(r"oficio.*citaci[oó]n|citaci[oó]n.*(?:empresa|propietario)|citado", texto):
+        return "Oficio de citación"
+    if re.search(r"requerimient|requerido para|requerir", texto):
+        return "Requerimiento"
+    if re.search(r"\bresoluci[oó]n\b|acto administrativo|resuelve", texto):
+        return "Resolución"
+    if re.search(r"\brecurso\b|reposici[oó]n|apelaci[oó]n|impugn|interpone|recurre", texto):
+        return "Recurso"
+    if re.search(r"solicitud|petici[oó]n|derecho de petici[oó]n|solicita", texto):
+        return "Solicitud"
+    return ""
+
+
+def normalizar_tipo_caso(valor):
+    """Acepta variantes de Ollama y devuelve solo un desenlace válido."""
+    texto = normalizar_errores_ocr(valor).lower()
+    if re.search(r"desistim|desiste", texto):
+        return "Desistimiento"
+    if re.search(r"con\s+recurso|recurso", texto):
+        return "Con recurso"
+    if re.search(r"sin\s+recurso", texto):
+        return "Sin recurso"
+    return ""
+
+
+def tipos_documentales_desde_ia(resultado):
+    """Obtiene tipos canónicos de la lista documental devuelta por Ollama."""
+    detectados = set()
+    for documento in (resultado or {}).get("documentos_detectados") or []:
+        if isinstance(documento, dict):
+            tipo = normalizar_tipo_documental(documento.get("tipo"))
+        else:
+            tipo = normalizar_tipo_documental(documento)
+        if tipo:
+            detectados.add(tipo)
+    return detectados
 
 
 def nombre_documento_expediente(
@@ -2979,11 +3120,27 @@ def clasificar_tipo_caso(texto="", nombre=""):
 def documentos_faltantes(registro):
     esperados = set(registro.get("documentos_esperados", []))
     anexados = {
-        documento.get("tipo_documento")
+        normalizar_tipo_documental(documento.get("tipo_documento"))
         for documento in registro.get("canvas_paginas", [])
         if documento.get("tipo_documento")
     }
-    return sorted(esperados - anexados)
+    faltantes = []
+    notificaciones = {
+        "Notificación",
+        "Notificación personal",
+        "Notificación por aviso",
+        "Notificación por publicación web",
+    }
+    for esperado in esperados:
+        canonico = normalizar_tipo_documental(esperado)
+        if canonico in anexados:
+            continue
+        if canonico == "Notificación" and anexados & notificaciones:
+            continue
+        if canonico == "Resolución" and "Requerimiento" in anexados:
+            continue
+        faltantes.append(esperado)
+    return sorted(faltantes)
 
 
 def documentos_requeridos_por_caso(tipo_caso, documentos_adicionales=None):
@@ -2994,25 +3151,31 @@ def documentos_requeridos_por_caso(tipo_caso, documentos_adicionales=None):
 
 def renderizar_checklist_documental(tipo_caso, documentos_presentes):
     """Muestra el checklist del proceso y sus documentos detectados."""
-    requeridos = documentos_requeridos_por_caso(tipo_caso)
-    presentes = set(documentos_presentes or [])
-    if tipo_caso == "Desistimiento":
-        presentes.add("Desistimiento")
-    elif tipo_caso == "Con recurso":
-        presentes.add("Recurso")
-    faltantes = [nombre for nombre in requeridos if nombre not in presentes]
+    grupos = CHECKLIST_GRUPOS_POR_CASO.get(tipo_caso, ())
+    presentes = {
+        normalizar_tipo_documental(documento)
+        for documento in (documentos_presentes or [])
+    }
+    faltantes = [
+        grupo for grupo in grupos
+        if not any(opcion in presentes for opcion in grupo)
+    ]
     st.markdown("#### Checklist documental")
     st.caption(f"Proceso seleccionado: **{tipo_caso}**")
     columnas = st.columns(2)
-    for indice, documento in enumerate(requeridos):
-        icono = "✅" if documento in presentes else "⬜"
-        texto = f"{icono} {documento}"
-        if faltantes and documento in faltantes:
+    for indice, grupo in enumerate(grupos):
+        encontrado = next((opcion for opcion in grupo if opcion in presentes), "")
+        etiqueta = " o ".join(grupo)
+        texto = f"{'✅' if encontrado else '⬜'} {etiqueta}"
+        if grupo in faltantes:
             columnas[indice % 2].warning(texto)
         else:
             columnas[indice % 2].success(texto)
     if faltantes:
-        st.warning("Faltan documentos: " + ", ".join(faltantes))
+        st.warning(
+            "Faltan documentos: "
+            + ", ".join(" o ".join(grupo) for grupo in faltantes)
+        )
     else:
         st.success("Checklist completo para este proceso.")
 
@@ -4434,6 +4597,17 @@ with st.sidebar:
     st.markdown("### Sistema de desvinculaciones")
     st.caption(datos_usuario["alias"])
     st.caption(f"Lectura local: {estado_ocr_local()}")
+    estado_ollama = estado_descarga_modelo()
+    if estado_ollama.get("running"):
+        st.info(f"IA local: {estado_ollama.get('message') or 'preparando modelo'}")
+    elif estado_ollama.get("error"):
+        st.warning(f"IA local: {estado_ollama['error']}")
+    elif buscar_ollama() and ollama_disponible():
+        modelos_disponibles = obtener_modelos_ollama()
+        if OLLAMA_REQUIRED_MODEL in modelos_disponibles:
+            st.caption(f"IA local: {OLLAMA_REQUIRED_MODEL} disponible")
+        else:
+            st.warning(f"IA local: falta descargar {OLLAMA_REQUIRED_MODEL}")
     st.divider()
     for opc in opciones_menu:
         if opc in {"Google Drive", "Hoja Google Sheets"}:
@@ -4866,9 +5040,18 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
             resultado_ia_automatico = st.session_state.get(clave_ia)
             if resultado_ia_automatico:
                 combinar_campos_ia(datos_carga, resultado_ia_automatico)
-            tipo_caso_detectado = clasificar_tipo_caso(
-                " ".join(textos_analizados.values()),
-                " ".join(archivo.name for archivo in archivos_canvas),
+                tipos_documentales_carga.update(
+                    tipos_documentales_desde_ia(resultado_ia_automatico)
+                )
+            tipo_caso_ia = normalizar_tipo_caso(
+                (resultado_ia_automatico or {}).get("tipo_caso")
+            )
+            tipo_caso_detectado = (
+                tipo_caso_ia
+                or clasificar_tipo_caso(
+                    " ".join(textos_analizados.values()),
+                    " ".join(archivo.name for archivo in archivos_canvas),
+                )
             )
             if tipo_caso_detectado not in TIPOS_CASO:
                 tipo_caso_detectado = datos_carga.get("tipo_caso", "")
