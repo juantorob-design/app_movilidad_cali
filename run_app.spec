@@ -47,13 +47,6 @@ if os.path.exists('icon.ico'):
 if os.path.exists('.streamlit'):
     archivos_proyecto.append(('.streamlit', '.streamlit'))
 
-editor_compilado = os.path.join(
-    'dist_pdf_editor',
-    'EditorPDFLocal',
-)
-if os.path.isdir(editor_compilado):
-    archivos_proyecto.append((editor_compilado, 'EditorPDFLocal'))
-
 datas += archivos_proyecto
 
 # Importaciones ocultas para evitar errores de módulos no encontrados en tiempo de ejecución
