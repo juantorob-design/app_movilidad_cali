@@ -1,6 +1,7 @@
 import os
 import sys
 import shutil
+import subprocess
 
 # --- INYECCIÓN DE RUTAS Y ENTORNO PARA PYINSTALLER ---
 if getattr(sys, 'frozen', False):
@@ -109,6 +110,7 @@ except ImportError:
     obtener_modelos_ollama = lambda: []
 
 _ocr_engine = None
+_ocr_last_error = ""
 _ocr_cache_writes_pending = 0
 # Los expedientes recibidos son escaneos y pueden superar ampliamente ocho
 # páginas. Limitar el OCR dejaba sin leer la mayor parte del expediente.
@@ -192,6 +194,34 @@ def resolver_ruta(ruta_relativa):
 
 def resolver_dato(ruta_relativa):
     return os.path.join(dir_datos(), ruta_relativa)
+
+
+def ruta_editor_pdf():
+    """Obtiene el editor PDF integrado en la instalación, si existe."""
+    if getattr(sys, "frozen", False):
+        candidato = os.path.join(
+            os.path.dirname(sys.executable),
+            "EditorPDFLocal",
+            "EditorPDFLocal.exe",
+        )
+        if os.path.isfile(candidato):
+            return candidato
+    candidato = os.path.join(os.path.abspath("."), "dist_pdf_editor", "EditorPDFLocal", "EditorPDFLocal.exe")
+    return candidato if os.path.isfile(candidato) else ""
+
+
+def abrir_editor_pdf():
+    """Abre el editor PDF local sin bloquear la aplicación principal."""
+    ruta = ruta_editor_pdf()
+    if not ruta:
+        raise FileNotFoundError(
+            "El Editor PDF local no está incluido en esta instalación."
+        )
+    subprocess.Popen(
+        [ruta],
+        cwd=os.path.dirname(ruta),
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
 
 
 def inicializar_memoria_local():
@@ -1950,7 +1980,7 @@ def descargar_archivo_drive(service, file_id):
 
 def _extraer_texto_pdf(contenido, progreso=None):
     """Lee texto digital y OCR de cada página para consolidar todos los campos."""
-    global _ocr_cache_writes_pending
+    global _ocr_cache_writes_pending, _ocr_last_error
     if PdfReader is None:
         return ""
     try:
@@ -2004,7 +2034,8 @@ def _extraer_texto_pdf(contenido, progreso=None):
             _guardar_cache_ocr()
             _ocr_cache_writes_pending = 0
         return normalizar_texto_documento(" ".join(paginas))
-    except Exception:
+    except Exception as error:
+        _ocr_last_error = str(error)
         return texto
 
 
@@ -4504,6 +4535,22 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
     if not es_modificador:
         st.warning("Rol de Visualizador: Modo de solo lectura.")
     else:
+        editor_pdf = ruta_editor_pdf()
+        if editor_pdf:
+            if st.button(
+                "Abrir Editor PDF local",
+                key="abrir_editor_pdf_entrada",
+                help="Une, divide, gira o extrae páginas antes de cargarlas al expediente.",
+            ):
+                try:
+                    abrir_editor_pdf()
+                except (FileNotFoundError, OSError, subprocess.SubprocessError) as error:
+                    st.error(f"No fue posible abrir el Editor PDF local: {error}")
+        else:
+            st.caption(
+                "El Editor PDF local no está disponible en esta instalación. "
+                "Los PDFs aún se procesan directamente desde este formulario."
+            )
         st.subheader("1. Cargar documentos")
         st.caption(
             "Carga primero el PDF completo o los documentos individuales. "
@@ -4760,6 +4807,12 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     "Si el PDF es un escaneo como imagen, completa los campos "
                     "manualmente o habilita OCR en el equipo."
                 )
+                if _ocr_last_error:
+                    st.warning(
+                        "El OCR no pudo procesar el PDF: "
+                        f"{_ocr_last_error}. Revisa que el paquete instalado "
+                        "incluya los recursos de RapidOCR."
+                    )
             # Ollama se ejecuta automáticamente una sola vez por carga. El
             # resultado se conserva en session_state para evitar repetir el
             # análisis en cada rerun de Streamlit.

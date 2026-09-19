@@ -5,6 +5,9 @@
 #if FileExists("OllamaSetup.exe")
   #define HasOllamaInstaller
 #endif
+#if DirExists("dist_pdf_editor\EditorPDFLocal")
+  #define HasPdfEditor
+#endif
 
 [Setup]
 AppId={{B2BFF6E6-4B77-4D76-A6C8-2D0B7C3A4A01}
@@ -37,6 +40,9 @@ Source: "images\icon.ico"; DestDir: "{app}\images"; Flags: ignoreversion
 #ifdef HasOllamaInstaller
 Source: "OllamaSetup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 #endif
+#ifdef HasPdfEditor
+Source: "dist_pdf_editor\EditorPDFLocal\*"; DestDir: "{app}\EditorPDFLocal"; Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
 
 [Run]
 #ifdef HasOllamaInstaller
@@ -46,6 +52,9 @@ Filename: "{tmp}\OllamaSetup.exe"; Parameters: "/silent"; Flags: runhidden waitu
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\images\icon.ico"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\images\icon.ico"
+#ifdef HasPdfEditor
+Name: "{group}\Editor PDF local"; Filename: "{app}\EditorPDFLocal\EditorPDFLocal.exe"; WorkingDir: "{app}\EditorPDFLocal"
+#endif
 
 ; La aplicación se abre manualmente desde el acceso directo del menú de inicio.
 ; Evitamos iniciar el proceso desde el instalador para no generar el error
