@@ -30,7 +30,7 @@ Solo existen tres finales válidos: `Con recurso`, `Sin recurso` o `Desistimient
 - El OCR no debe leerse como un único bloque del expediente completo si hay documentos separados.
 - Debe separar el PDF por bloques documentales antes de completar el formulario.
 - Cada tipo documental debe guardarse en su carpeta correcta dentro de la estructura de Drive del expediente.
-- La carpeta `Pendientes` solo se usa como staging temporal para cargas sin fecha definitiva.
+- Los complementos sin expediente principal se guardan temporalmente en `Peticion/Por_vincular/PLACA/`.
 - Una vez confirmada la fecha, la carpeta se mueve al año correspondiente y se conserva el PDF completo junto a los complementos.
 - Los documentos de la misma familia se mantienen unidos en su subcarpeta; no se mezclan páginas de resolución, notificación, recurso o solicitud.
 - Las páginas de continuación heredan el tipo del bloque anterior si no tienen suficiente evidencia.

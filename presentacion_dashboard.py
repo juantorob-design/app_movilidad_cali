@@ -89,7 +89,7 @@ with tab_resumen:
         st.success("Metadatos conservados al actualizar")
         st.success("Menos duplicados en Drive y Sheets")
         st.success("Distribución controlada por roles")
-        st.success("Pendientes visibles y reubicables")
+        st.success("Complementos sin vincular visibles y reubicables")
 
     st.subheader("Qué cambió en la versión 1.1.12")
     st.markdown(
@@ -98,7 +98,7 @@ with tab_resumen:
         "- Visor PDF integrado, copias locales, foliación y barra de progreso.\n"
         "- Formulario administrativo precargado desde OCR, base local y Google Sheets, sin sobrescribir datos confirmados.\n"
         "- Checklist automático por tipo de caso y advertencia para radicados dudosos.\n"
-        "- Drive organizado en Peticion/Pendientes/AÑO, con PDF completo y complementos en carpetas separadas.\n"
+        "- Drive organizado por año y expediente, con PDF completo y complementos en carpetas separadas.\n"
         "- Google Sheets con tabla, filtros, trazabilidad, actualización de filas y enlaces a Drive.\n"
         "- Consulta unificada por radicado, placa, empresa, NIT, cédula, ubicación física y fecha.\n"
         "- Roles, permisos de descarga, auditoría, deduplicación y actualizador autorizado desde GitHub.\n"
@@ -121,16 +121,16 @@ with tab_capacitacion:
         #### 3. Regla documental principal
         El año de Drive siempre sale de la fecha de creación de la petición. Un
         anexo puede llegar sin fecha propia: si el expediente existe, reutiliza la
-        fecha guardada; si todavía no existe, queda en `Peticion/Pendientes`
-        identificado por radicado o placa.
+        fecha guardada; si todavía no existe, queda en `Peticion/Por_vincular`
+        identificado por placa hasta localizar el expediente principal.
 
         #### 4. Revisión de resultados
         Confirme el checklist de Solicitud, Recurso, Resolución, Notificación,
         Desistimiento o Constancia de ejecutoria. Revise la carpeta de destino,
         el PDF unificado y la fila relacionada en Google Sheets.
 
-        #### 5. Pendientes y consulta
-        En Consulta & Archivo revise la bandeja de PDF pendientes. Cuando aparezca
+        #### 5. Complementos y consulta
+        En Consulta & Archivo revise la bandeja de documentos por vincular. Cuando aparezca
         la petición principal, el sistema puede mover los anexos a la carpeta anual,
         incorporarlos al expediente y reconstruir el PDF completo.
 
@@ -172,9 +172,9 @@ with tab_flujo:
         ("2. Leer y revisar", "Se extraen datos, se muestra el visor y el destino previsto."),
         ("3. Clasificar", "Se identifica recurso, sin recurso o desistimiento."),
         ("4. Validar", "El checklist muestra documentos presentes y faltantes."),
-        ("5. Organizar", "Drive guarda por año o en Pendientes y genera el PDF unificado."),
+        ("5. Organizar", "Drive guarda por año o en Por_vincular y genera el PDF unificado."),
         ("6. Sincronizar", "Sheets conserva los campos completos y sus enlaces."),
-        ("7. Consultar", "El expediente y los pendientes se buscan por radicado, placa, empresa, NIT, cédula, ubicación o fecha."),
+        ("7. Consultar", "El expediente y los complementos por vincular se buscan por radicado, placa, empresa, NIT, cédula, ubicación o fecha."),
     ]
     for title, description in pasos:
         st.markdown(

@@ -101,23 +101,18 @@ servicio externo. Instala Ollama, inicia su servicio y descarga un modelo:
 ollama pull qwen2.5:7b
 ```
 
-La aplicación detecta Ollama en `http://127.0.0.1:11434` y muestra el botón
-**Analizar expediente con IA local**. Se puede cambiar el modelo mediante
+La aplicación detecta Ollama en `http://127.0.0.1:11434`, inicia el servicio
+local si está instalado y ejecuta automáticamente el análisis estructurado
+después del OCR. Se puede cambiar el modelo mediante
 `SISTEMA_OLLAMA_MODEL`; la URL y el tiempo de espera también se pueden ajustar
 con `SISTEMA_OLLAMA_URL` y `SISTEMA_OLLAMA_TIMEOUT`. Si Ollama no está
 disponible, el OCR, las reglas administrativas y el formulario siguen
 funcionando sin cambios.
 
-Si Ollama no está instalado, la pantalla muestra un botón para abrir la
-descarga oficial en `https://ollama.com/download`. La instalación continúa
-siendo explícita: la aplicación no ejecuta instaladores externos de forma
-silenciosa. Después de instalar Ollama, el botón de descarga del modelo ejecuta
-localmente `ollama pull qwen2.5:7b`.
-
-La aplicación no instala Ollama ni descarga modelos automáticamente en segundo
-plano. La preparación requiere una acción explícita del usuario. Las
-actualizaciones de motores solo deben habilitarse mediante un manifiesto HTTPS
-con SHA-256 y una URL autorizada; no se ejecutan binarios sin verificación.
+El instalador de Windows incluye Ollama y lo ejecuta silenciosamente solo si
+no existe una instalación compatible. Si falta `qwen2.5:7b`, la aplicación
+inicia su descarga en segundo plano y muestra su estado. Los modelos se
+conservan en `%USERPROFILE%\.ollama\models` durante las actualizaciones.
 
 ## Datos y credenciales
 
