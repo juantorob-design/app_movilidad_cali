@@ -1,5 +1,5 @@
 {
-  "version": "1.1.21",
-  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.21/SistemaDesvinculaciones-Setup-1.1.21.exe",
-  "changelog": "Corrige el empaquetado de las reglas documentales y valida el arranque del ejecutable."
+  "version": "1.1.22",
+  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.22/SistemaDesvinculaciones-Setup-1.1.22.exe",
+  "changelog": "Corrige definitivamente el empaquetado de reglas documentales y valida la interfaz del ejecutable."
 }
