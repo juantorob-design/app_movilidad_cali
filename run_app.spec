@@ -29,6 +29,7 @@ datas += copy_metadata('google-api-python-client')
 # Archivos estáticos indispensables del proyecto
 archivos_proyecto = [
     ('app_6.py', '.'),
+    ('document_rules.py', '.'),
     ('local_ai_service.py', '.'),
     ('dependency_manager.py', '.'),
     ('updater.py', '.'),
@@ -65,6 +66,7 @@ hiddenimports = [
     'openpyxl',
     'openpyxl.cell',
     'openpyxl.styles',
+    'document_rules',
     'pandas',
     'google.oauth2',
     'google.oauth2.credentials',
