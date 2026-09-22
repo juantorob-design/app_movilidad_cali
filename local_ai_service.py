@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 
 import requests
@@ -16,16 +17,38 @@ import requests
 
 OLLAMA_URL = os.environ.get("SISTEMA_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.environ.get("SISTEMA_OLLAMA_MODEL", "qwen2.5:7b")
-OLLAMA_TIMEOUT = int(os.environ.get("SISTEMA_OLLAMA_TIMEOUT", "180"))
+OLLAMA_TIMEOUT = int(os.environ.get("SISTEMA_OLLAMA_TIMEOUT", "300"))
 OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
 
+DEFAULT_OLLAMA_OPTIONS = {
+    "temperature": 0.1,
+    "num_predict": 2048,
+    "repeat_penalty": 1.05,
+    "seed": 42,
+}
+
 SYSTEM_PROMPT = """Eres el analista documental local del Sistema de Desvinculaciones.
-Analiza únicamente la evidencia recibida y no inventes datos. Respeta esta secuencia:
-solicitud, consulta QX, resolución o requerimiento, citaciones, notificaciones,
-recurso y sus actuaciones, constancia de ejecutoria y remisión a registro.
-Los únicos desenlaces válidos son Con recurso, Sin recurso o Desistimiento.
-Si falta evidencia, indícalo expresamente. Distingue Otro de los documentos
-principales y conserva la trazabilidad de cada dato.
+Tu misión es clasificar el expediente por bloques y no por menciones generales.
+
+Reglas estrictas:
+1) Usa únicamente la evidencia textual del bloque. No inventes ni reutilices texto de interfaz, menús, nombres de campos o etiquetas.
+2) La secuencia administrativa obligatoria es:
+   Solicitud o petición
+   Consulta QX
+   Resolución o Requerimiento
+   Oficios de citación
+   Comunicación: notificación personal, por aviso, publicación web
+   Recurso
+   Resolución del recurso
+   Citación del recurso
+   Notificación del recurso
+   Constancia de ejecutoria
+   Remisión a registro
+3) Solo puedes marcar un documento cuando exista encabezado, fórmula administrativa, acto o evidencia propia del bloque. Si aparece solo mencionado dentro de otro documento, NO lo marques como documento principal.
+4) Los únicos desenlaces válidos son: Con recurso, Sin recurso, Desistimiento.
+5) Si una etapa no aparece, indícalo en faltantes y no la conviertas en un documento falso.
+6) Mantén la prioridad correcta de los tipos documentales y de la secuencia del flujo administrativo.
+7) No mezcles texto de labels, OCR contaminado, tablas de interfaz, nombres de pestañas o mensajes automáticos con datos reales del expediente.
 
 Devuelve exclusivamente JSON válido con estas claves:
 {
@@ -60,6 +83,7 @@ Devuelve exclusivamente JSON válido con estas claves:
   "paginas_por_seccion": [{"tipo": "string", "paginas": [1, 2]}],
   "documentos_detectados": [{
     "tipo": "Solicitud|Consulta QX|Resolución|Requerimiento|Oficio de citación|Notificación personal|Notificación por aviso|Notificación por publicación web|Recurso|Resolución del recurso|Citación del recurso|Notificación del recurso|Constancia de ejecutoria|Remisión a registro|Desistimiento|Otro",
+    "paginas": [1, 2],
     "paginas_o_evidencia": "string"
   }],
   "faltantes": ["string"]
@@ -109,13 +133,18 @@ def _extraer_json(respuesta: str) -> dict[str, Any]:
         if texto.startswith("json"):
             texto = texto[4:].lstrip()
     inicio = texto.find("{")
-    fin = texto.rfind("}")
-    if inicio < 0 or fin <= inicio:
+    if inicio < 0:
         raise ValueError("La IA local no devolvió un objeto JSON.")
-    resultado = json.loads(texto[inicio:fin + 1])
-    if not isinstance(resultado, dict):
-        raise ValueError("La respuesta de la IA local no tiene formato de objeto.")
-    return resultado
+    for fin in range(len(texto) - 1, inicio, -1):
+        if texto[fin] != "}":
+            continue
+        try:
+            resultado = json.loads(texto[inicio:fin + 1])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(resultado, dict):
+            return resultado
+    raise ValueError("La IA local devolvió una respuesta JSON inválida o truncada.")
 
 
 def analizar_expediente_local(texto: str, *, modelo: str | None = None) -> dict[str, Any]:
@@ -130,8 +159,18 @@ def analizar_expediente_local(texto: str, *, modelo: str | None = None) -> dict[
         )
 
     prompt = (
-        "Analiza el siguiente texto OCR por bloques documentales. Prioriza los "
-        "campos administrativos y cita la evidencia textual breve.\n\n"
+        "Analiza el siguiente texto OCR por bloques documentales, no como un único expediente. "
+        "Haz primero una lectura dirigida al flujo administrativo obligatorio: "
+        "solicitud/petición, consulta QX, resolución o requerimiento, citación, notificación, "
+        "recurso, resolución del recurso, citación del recurso, notificación del recurso, "
+        "constancia de ejecutoria y remisión a registro. "
+        "Identifica radicado padre, placa, fechas, empresa, NIT, propietario, cédula y el desenlace. "
+        "No marques un documento solo porque aparezca citado dentro de otro bloque. Requiere encabezado, "
+        "acto administrativo o evidencia propia del documento. Ignora etiquetas de interfaz, nombres de campos, "
+        "menús, texto de herramientas y residuos OCR tipo 'de: mi preferencia', 'Identificación Doc', 'Nombres ...', 'obligaciones'. "
+        "Si no hay evidencia suficiente, deja el valor vacío y añade el nombre del documento ausente a faltantes. "
+        "Usa la secuencia administrativa como prioridad; la clasificación no debe confundirse con un texto general del expediente.\n\n"
+        "Formato esperado: JSON válido con los campos del esquema, incluyendo `paginas_por_seccion` y `documentos_detectados` con `paginas` y `paginas_o_evidencia`.\n\n"
         f"TEXTO OCR:\n{contenido}"
     )
     try:
@@ -145,7 +184,7 @@ def analizar_expediente_local(texto: str, *, modelo: str | None = None) -> dict[
                 ],
                 "stream": False,
                 "format": "json",
-                "options": {"temperature": 0.1},
+                "options": DEFAULT_OLLAMA_OPTIONS.copy(),
             },
             timeout=OLLAMA_TIMEOUT,
         )
@@ -199,11 +238,44 @@ def analisis_a_markdown(resultado: dict[str, Any]) -> str:
     return "\n".join(lineas)
 
 
+def _valor_ia_sospechoso(valor: Any) -> bool:
+    """Elimina texto contaminado que suele aparecer por OCR o por etiquetas de interfaz."""
+    texto = str(valor or "").strip().lower()
+    if not texto:
+        return False
+    patrones = (
+        r"de\s*:\s*mi\s+preferencia",
+        r"identificaci[oó]n\s+doc",
+        r"nombres?\s*(?:emp|pan|/|\|)?",
+        r"obligaciones",
+        r"preferencia",
+        r"seleccione",
+        r"guardar y sincronizar",
+        r"documentos esperados",
+    )
+    return any(re.search(p, texto) for p in patrones)
+
+
 def campos_formulario_desde_ia(resultado: dict[str, Any]) -> dict[str, str]:
-    """Extrae solo los campos del formulario con valores simples y trazables."""
+    """Extrae solo los campos del formulario con valores simples, reales y no contaminados."""
     campos = {}
     for campo in FORMULARIO_CAMPOS:
         valor = resultado.get(campo)
-        if isinstance(valor, (str, int, float)) and str(valor).strip():
-            campos[campo] = str(valor).strip()
+        if not isinstance(valor, (str, int, float)):
+            continue
+        texto = str(valor).strip()
+        if not texto:
+            continue
+        if campo in {"empresa", "propietario", "direccion_empresa", "direccion_propietario", "nueva_empresa"} and _valor_ia_sospechoso(texto):
+            continue
+        if campo in {"nit", "cedula", "radicado_padre"}:
+            texto_limpio = re.sub(r"[^0-9A-Za-z]", "", texto)
+            if len(texto_limpio) < 4:
+                continue
+            if campo == "radicado_padre" and (
+                texto.upper() in {"ICADOPADRE", "RADICADOPADRE", "RADICADO PADRE"}
+                or len(re.sub(r"\D", "", texto)) < 8
+            ):
+                continue
+        campos[campo] = texto
     return campos

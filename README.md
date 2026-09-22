@@ -61,6 +61,27 @@ Para usar el escritorio integrado:
 .\venv\Scripts\python run_app.py
 ```
 
+## Validación y preparación para release
+
+Las reglas documentales y los nombres de expediente se centralizan en el módulo
+`document_rules.py` para mantener una base única de validación y evitar que la
+UI o el OCR rompan la lógica de clasificación documental.
+
+Se incluye una prueba mínima con `unittest` para validar:
+
+- clasificación de caso: `Con recurso`, `Sin recurso`, `Desistimiento`
+- detección de tipos documentales
+- generación de nombres de expediente y PDF
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Antes de publicar una versión se recomienda dejar el repositorio limpio usando
+los patrones del `.gitignore` del proyecto y evitar subir artefactos
+generados, cachés OCR, tokens, credenciales, PDFs temporales y binarios de
+construcción.
+
 Para abrir únicamente el dashboard de presentación:
 
 ```powershell

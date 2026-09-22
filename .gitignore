@@ -22,3 +22,16 @@ desktop.ini
 *.lnk
 # Guía local con datos de acceso completados por el propietario
 GUIA_OPERATIVA_ACCESOS_SISTEMA.docx
+# Archivos temporales y generados de validación
+build_pdf_editor/
+dist_pdf_editor/
+EditorPDFLocal-1.0.0.zip
+OllamaSetup.exe
+_sheet_debug.txt
+_prueba_validacion_final.pdf
+*.zip
+*.exe
+*.log
+*.tmp
+*.bak
+*.cache

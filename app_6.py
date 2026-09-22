@@ -40,6 +40,18 @@ except ImportError:
 import pandas as pd
 import requests
 from dotenv import load_dotenv
+import document_rules as _document_rules
+from document_rules import (
+    clasificar_tipo_caso,
+    clasificar_tipo_documento,
+    componentes_ubicacion,
+    fecha_para_nombre_carpeta,
+    nombre_carpeta_expediente,
+    nombre_pdf_expediente,
+    normalizar_errores_ocr,
+    normalizar_tipo_documental,
+    tipos_documentales_detectados,
+)
 try:
     import webview
 except ImportError:
@@ -355,6 +367,7 @@ SUBCARPETAS_DOCUMENTALES = (
     "recurso",
     "constancia de ejecutoria",
     "remision",
+    "desistimiento",
 )
 SPREADSHEET_CONFIG_FILE = resolver_dato("sistema_spreadsheet_id.json")
 SPREADSHEET_ID = os.environ.get(
@@ -1429,16 +1442,86 @@ def carpeta_drive_para_fecha(service, fecha):
 
 
 def carpeta_drive_para_expediente(service, fecha, radicado, placa, ubicacion):
-    """Obtiene PDFS Escaneados/AÑO/RADICADO_PLACA_DD_MM_AAAA."""
+    """Obtiene la ruta final del expediente en Drive, con nombre y ubicación consistentes."""
     carpeta_anual_id = carpeta_drive_para_fecha(service, fecha)
     if not carpeta_anual_id:
         return None
-    nombre = nombre_carpeta_peticion(
+
+    caja, folder, carpeta = componentes_ubicacion(ubicacion)
+    carpeta_actual_id = carpeta_anual_id
+    for nombre in (caja, folder, carpeta):
+        if not nombre:
+            continue
+        siguiente = buscar_o_crear_carpeta_drive(service, carpeta_actual_id, nombre)
+        if not siguiente:
+            return None
+        carpeta_actual_id = siguiente
+
+    nombre_expediente = nombre_carpeta_expediente(radicado, placa, fecha, ubicacion)
+    if not nombre_expediente:
+        return carpeta_actual_id
+
+    return buscar_o_crear_carpeta_drive(service, carpeta_actual_id, nombre_expediente)
+
+
+def componentes_ubicacion(ubicacion):
+    """Convierte la ubicación administrativa en niveles físicos de Drive."""
+    texto = str(ubicacion or "").strip()
+    if not texto:
+        return "", "", ""
+
+    texto = texto.replace("/", " ").replace("|", " ")
+    coincidencias = re.findall(
+        r"(caja|folder|carpeta)\s*[-:_ ]*\s*([A-Za-z0-9]+)",
+        texto,
+        flags=re.IGNORECASE,
+    )
+    if coincidencias:
+        valores = {}
+        for clave, valor in coincidencias:
+            valores[clave.casefold()] = valor.strip("-_ ")
+        caja = valores.get("caja")
+        folder = valores.get("folder")
+        carpeta = valores.get("carpeta")
+        if caja or folder or carpeta:
+            return (
+                f"CAJA-{caja}" if caja else "",
+                f"FOLDER-{folder}" if folder else "",
+                f"CARPETA-{carpeta}" if carpeta else "",
+            )
+
+    # Compatibilidad con cadenas heredadas de la forma: "Carpeta 1 - Folder 1 - Caja 1"
+    coincidencia = re.search(
+        r"(?:carpeta|carpeta\s*\d+)\s*(\d+)\s*-\s*(?:folder|folder\s*\d+)\s*(\d+)\s*-\s*(?:caja|caja\s*\d+)\s*(\d+)",
+        texto,
+        flags=re.IGNORECASE,
+    )
+    if coincidencia:
+        carpeta, folder, caja = coincidencia.groups()
+        return f"CAJA-{caja}", f"FOLDER-{folder}", f"CARPETA-{carpeta}"
+
+    return "", "", ""
+
+
+def _normalizar_parte_ubicacion(valor, prefijo):
+    """Normaliza una parte de la ubicación para nombres de expediente."""
+    texto = str(valor or "").strip()
+    if not texto:
+        return ""
+    texto = texto.replace("/", " ").replace("|", " ")
+    texto = re.sub(rf"^{re.escape(prefijo)}\s*[-_: ]*", "", texto, flags=re.IGNORECASE)
+    texto = texto.strip("-_/ ")
+    return f"{prefijo}-{texto}" if texto else ""
+
+
+def nombre_raiz_expediente(radicado, placa, fecha):
+    """Genera la raíz estable del expediente sin ubicación física."""
+    return nombre_carpeta_expediente(
         radicado,
         placa,
         fecha,
+        "",
     )
-    return buscar_o_crear_carpeta_drive(service, carpeta_anual_id, nombre)
 
 
 def carpeta_drive_para_staging(service, radicado, placa, fecha):
@@ -1530,10 +1613,11 @@ def fusionar_complementos_sin_vincular(service, placa, carpeta_expediente_id):
     return movidos
 
 def buscar_carpeta_expediente_drive(service, fecha, radicado, placa):
-    """Busca un expediente existente primero en Peticion y luego por año."""
+    """Busca la raíz de un expediente primero en Peticion y luego por año."""
     if not service:
         return None
-    nombre = nombre_carpeta_peticion(radicado, placa, fecha)
+    nombre = nombre_raiz_expediente(radicado, placa, fecha)
+    nombre_legacy = nombre_carpeta_peticion(radicado, placa, fecha)
     peticion_id = buscar_carpeta_drive(
         service,
         DRIVE_FOLDER_ID,
@@ -1541,6 +1625,8 @@ def buscar_carpeta_expediente_drive(service, fecha, radicado, placa):
     )
     if peticion_id:
         encontrada = buscar_carpeta_drive(service, peticion_id, nombre)
+        if not encontrada and nombre_legacy != nombre:
+            encontrada = buscar_carpeta_drive(service, peticion_id, nombre_legacy)
         if encontrada:
             return encontrada
         if placa:
@@ -1567,6 +1653,8 @@ def buscar_carpeta_expediente_drive(service, fecha, radicado, placa):
     if not anual_id:
         return None
     encontrada = buscar_carpeta_drive(service, anual_id, nombre)
+    if not encontrada and nombre_legacy != nombre:
+        encontrada = buscar_carpeta_drive(service, anual_id, nombre_legacy)
     if encontrada or not placa:
         return encontrada
     coincidencias = service.files().list(
@@ -1600,6 +1688,7 @@ def carpeta_drive_para_documento(service, carpeta_expediente_id, tipo_documento)
         "resolución del recurso": "recurso",
         "constancia de ejecutoria": "constancia de ejecutoria",
         "remisión a registro": "remision",
+        "desistimiento": "desistimiento",
     }
     nombre = equivalencias.get(tipo, "Otro")
     return buscar_o_crear_carpeta_drive(
@@ -1636,27 +1725,18 @@ def nombre_complemento_peticion(
     recurso="",
     numero=1,
 ):
-    """Genera el nombre estándar de un complemento en la petición temporal."""
-    try:
-        fecha_obj = datetime.date.fromisoformat(str(fecha or "").strip())
-        fecha_formateada = fecha_obj.strftime("%d_%m_%Y")
-    except (TypeError, ValueError):
-        fecha_formateada = "FECHA_PENDIENTE"
-    partes = [
-        fecha_formateada,
-    ]
-    valores = [
-        radicado or "NRO_PETICION_PENDIENTE",
-        placa or "PLACA_PENDIENTE",
-        caja or "CAJA_PENDIENTE",
-        folder or "FOLDER_PENDIENTE",
-        carpeta or "CARPETA_PENDIENTE",
-        recurso or "SIN_RECURSO",
-    ]
+    """Genera el nombre estándar de un bloque documental temporal."""
+    fecha_formateada = fecha_para_nombre_carpeta(fecha)
+    tipo = _token_nombre_documento(recurso or "Otro").lower()
     base = "_".join(
-        [_token_nombre_documento(valor) for valor in valores[:2]]
-        + partes
-        + [_token_nombre_documento(valor) for valor in valores[2:]]
+        token
+        for token in (
+            _token_nombre_documento(radicado or "NRO_PETICION_PENDIENTE"),
+            _token_nombre_documento(placa or "PLACA_PENDIENTE"),
+            fecha_formateada,
+            tipo,
+        )
+        if token
     )
     sufijo = f"_{int(numero):02d}" if numero > 1 else ""
     return f"{base}{sufijo}.pdf"
@@ -1695,6 +1775,7 @@ def preparar_carga_drive(
     tipo_fallback,
     carga_id,
     es_complemento=False,
+    partes_analizadas=None,
 ):
     """Sube de inmediato las partes detectadas; el PDF unificado se crea al guardar."""
     if not service:
@@ -1731,7 +1812,10 @@ def preparar_carga_drive(
             contenido = archivo.getvalue()
             if not archivo.name.lower().endswith(".pdf"):
                 contenido = convertir_imagen_a_pdf(contenido, archivo.name)
-            partes = separar_pdf_completo(contenido, tipo_fallback)
+            partes = (
+                list((partes_analizadas or {}).get(huella_contenido(contenido), []))
+                or separar_pdf_completo(contenido, tipo_fallback)
+            )
             for numero, parte in enumerate(partes, start=1):
                 tipo = parte.get("tipo") or tipo_fallback or "Otro"
                 carpeta_tipo = carpeta_drive_para_documento(
@@ -2150,10 +2234,20 @@ def fecha_para_formulario(valor):
         return None
 
 
+def radicado_padre_valido(valor):
+    """Rechaza etiquetas OCR y conserva radicados con evidencia numérica."""
+    texto = normalizar_texto_documento(valor).strip().upper()
+    if not texto or texto in {"ICADOPADRE", "RADICADOPADRE", "RADICADO PADRE"}:
+        return False
+    return len(re.sub(r"\D", "", texto)) >= 8
+
+
 def combinar_datos_detectados(destino, nuevos):
     """Consolida valores encontrados en todas las páginas sin perder evidencia."""
     for campo, valor in (nuevos or {}).items():
         if not valor:
+            continue
+        if campo == "radicado_padre" and not radicado_padre_valido(valor):
             continue
         actual = destino.get(campo)
         if not actual:
@@ -2170,7 +2264,7 @@ def combinar_datos_detectados(destino, nuevos):
 
 
 def combinar_campos_ia(destino, resultado_ia):
-    """Completa campos y reemplaza únicamente lecturas OCR evidentemente corruptas."""
+    """Completa campos y reemplaza solo si la lectura OCR actual es claramente corrupta."""
     if not resultado_ia or campos_formulario_desde_ia is None:
         return destino
     campos_ia = campos_formulario_desde_ia(resultado_ia)
@@ -2178,19 +2272,27 @@ def combinar_campos_ia(destino, resultado_ia):
         if campo == "tipo_caso":
             if valor in TIPOS_CASO and valor != "Detección automática":
                 destino[campo] = valor
-        elif (
-            not destino.get(campo)
-            or (
-                campo in {
-                    "empresa",
-                    "propietario",
-                    "direccion_empresa",
-                    "direccion_propietario",
-                }
-                and valor_ocr_sospechoso(destino.get(campo))
-            )
-        ):
+            continue
+        if campo == "radicado_padre" and not radicado_padre_valido(valor):
+            continue
+        actual = destino.get(campo)
+        if not actual:
             destino[campo] = valor
+            continue
+        if campo in {
+            "empresa",
+            "propietario",
+            "direccion_empresa",
+            "direccion_propietario",
+            "nueva_empresa",
+        } and valor_ocr_sospechoso(actual):
+            destino[campo] = valor
+            continue
+        if campo in {"nit", "cedula", "radicado_padre", "placa"}:
+            actual_limpio = re.sub(r"\D", "", str(actual))
+            nuevo_limpio = re.sub(r"\D", "", str(valor))
+            if len(nuevo_limpio) > len(actual_limpio):
+                destino[campo] = valor
     return destino
 
 
@@ -2225,8 +2327,13 @@ def combinar_datos_por_coincidencia(destino, fuente):
         "recurso", "fecha_recurso", "tipo_caso", "ubicacion",
     )
     for campo in campos:
-        if not destino.get(campo) and fuente.get(campo):
-            destino[campo] = fuente[campo]
+        valor_fuente = fuente.get(campo)
+        if not valor_fuente:
+            continue
+        if campo == "radicado_padre" and not radicado_padre_valido(valor_fuente):
+            continue
+        if not destino.get(campo):
+            destino[campo] = valor_fuente
     return destino
 
 
@@ -2239,8 +2346,13 @@ def buscar_expediente_local_por_coincidencias(expedientes, datos):
     mejor = None
     mejor_puntaje = 0
     for expediente in (expedientes or {}).values():
+        candidato_radicado = expediente.get("radicado_padre", "")
+        if candidato_radicado and buscados.get("radicado_padre") and not radicado_padre_valido(candidato_radicado):
+            continue
         puntaje = 0
         for campo, valor in buscados.items():
+            if campo == "radicado_padre" and not radicado_padre_valido(expediente.get(campo, "")):
+                continue
             existente = normalizar_identificador(expediente.get(campo, ""))
             if valor and existente and valor == existente:
                 puntaje += 4 if campo == "radicado_padre" else 2
@@ -2582,6 +2694,10 @@ def extraer_datos_pdf(contenido, texto=None):
             flags=re.IGNORECASE,
         )[0].strip(" .,:;-")
     radicado_extraido = str(datos.get("radicado_padre", "")).strip()
+    if radicado_extraido and not radicado_padre_valido(radicado_extraido):
+        datos.pop("radicado_padre", None)
+        datos.pop("radicado_revision", None)
+        radicado_extraido = ""
     if radicado_extraido and not re.fullmatch(r"20\d{16}", radicado_extraido):
         datos["radicado_revision"] = (
             f"Revisar radicado detectado: {radicado_extraido}. "
@@ -2693,6 +2809,7 @@ def detectar_estado_documento(texto, tipo_fallback="Solicitud"):
     return "Expediente completo" if str(tipo_fallback or "").strip() == "Expediente completo" else "Complemento"
 
 
+@lru_cache(maxsize=2)
 def separar_pdf_completo(contenido, tipo_fallback):
     """Quita páginas vacías y separa un PDF por bloques documentales detectables."""
     global _ocr_cache_writes_pending
@@ -2832,6 +2949,11 @@ def extraer_texto_ocr_pixmap(pixmap):
 
 def clasificar_tipo_documento(texto, tipo_fallback):
     evidencia = normalizar_errores_ocr(texto).lower()
+    if re.search(
+        r"\bdesistim\w*\b|\bdeclara(?:r)?\s+el\s+desistimiento\b",
+        evidencia,
+    ):
+        return "Desistimiento"
     puntuaciones = {
         "Desistimiento": [
             (9, r"\bdesistimiento\b|declara(?:r)?\s+el\s+desistimiento"),
@@ -2869,6 +2991,10 @@ def clasificar_tipo_documento(texto, tipo_fallback):
         "Constancia de ejecutoria": [
             (10, r"constancia\s+de\s+ejecutoria"),
             (7, r"\bejecutoria\b|\bfirmeza\b|\bconstancia\b"),
+        ],
+        "Remisión a registro": [
+            (12, r"remisi[oó]n\s+(?:a|al)\s+registro|remision\s+(?:a|al)\s+registro"),
+            (8, r"registro\s+automotor|remitir\s+al\s+registro"),
         ],
         "Recurso": [
             (10, r"recurso\s+de\s+(?:reposici[oó]n|apelaci[oó]n)"),
@@ -2986,10 +3112,10 @@ def normalizar_tipo_caso(valor):
     texto = normalizar_errores_ocr(valor).lower()
     if re.search(r"desistim|desiste", texto):
         return "Desistimiento"
+    if re.search(r"sin\s+recurso|no\s+(?:se\s+)?interpuso\s+recurso", texto):
+        return "Sin recurso"
     if re.search(r"con\s+recurso|recurso", texto):
         return "Con recurso"
-    if re.search(r"sin\s+recurso", texto):
-        return "Sin recurso"
     return ""
 
 
@@ -3004,6 +3130,50 @@ def tipos_documentales_desde_ia(resultado):
         if tipo:
             detectados.add(tipo)
     return detectados
+
+
+def aplicar_clasificacion_ia_a_partes(partes, resultado):
+    """Ajusta el tipo de cada bloque usando las páginas que identificó Ollama."""
+    por_pagina = {}
+    for seccion in (resultado or {}).get("paginas_por_seccion") or []:
+        if not isinstance(seccion, dict):
+            continue
+        tipo = normalizar_tipo_documental(seccion.get("tipo"))
+        if not tipo:
+            continue
+        for pagina in seccion.get("paginas") or []:
+            try:
+                por_pagina[int(pagina)] = tipo
+            except (TypeError, ValueError):
+                continue
+    for documento in (resultado or {}).get("documentos_detectados") or []:
+        if not isinstance(documento, dict):
+            continue
+        tipo = normalizar_tipo_documental(documento.get("tipo"))
+        if not tipo:
+            continue
+        paginas = documento.get("paginas") or []
+        if not paginas:
+            paginas = [
+                int(valor)
+                for valor in re.findall(
+                    r"\b(?:p[aá]gina|p[aá]ginas?)\s*[:#]?\s*(\d+)",
+                    str(documento.get("paginas_o_evidencia", "")),
+                    flags=re.IGNORECASE,
+                )
+            ]
+        for pagina in paginas:
+            try:
+                por_pagina[int(pagina)] = tipo
+            except (TypeError, ValueError):
+                continue
+    for parte in partes or []:
+        paginas = parte.get("paginas_por_seccion") or []
+        tipos = [por_pagina.get(int(pagina)) for pagina in paginas if str(pagina).isdigit()]
+        tipos = [tipo for tipo in tipos if tipo]
+        if tipos:
+            parte["tipo"] = max(set(tipos), key=tipos.count)
+    return partes
 
 
 def nombre_documento_expediente(
@@ -3034,8 +3204,13 @@ def _token_nombre_documento(valor):
 
 
 def nombre_carpeta_expediente(radicado, placa, fecha, ubicacion):
-    """Genera la carpeta final: RADICADO_PADRE_PLACA_FECHA_UBICACION."""
-    partes = [radicado, placa, fecha, ubicacion]
+    """Genera la carpeta final: RADICADO_PADRE_PLACA_AAAA-MM-DD_UBICACION."""
+    fecha_formateada = fecha_para_nombre_carpeta(fecha)
+    caja, folder, carpeta = componentes_ubicacion(ubicacion)
+    partes = [radicado, placa, fecha_formateada]
+    for token in (caja, folder, carpeta):
+        if token:
+            partes.append(token)
     nombre = "_".join(
         token for token in (_token_nombre_documento(parte) for parte in partes)
         if token
@@ -3043,14 +3218,17 @@ def nombre_carpeta_expediente(radicado, placa, fecha, ubicacion):
     return nombre or "RADICADO_PENDIENTE"
 
 
-def nombre_carpeta_peticion(radicado, placa, fecha):
-    """Genera la carpeta temporal con fecha visible en formato DD_MM_AAAA."""
+def fecha_para_nombre_carpeta(fecha):
+    """Normaliza una fecha de expediente al formato ordenable AAAA-MM-DD."""
     try:
-        fecha_formateada = datetime.date.fromisoformat(
-            str(fecha or "").strip()
-        ).strftime("%d_%m_%Y")
+        return datetime.date.fromisoformat(str(fecha or "").strip()).isoformat()
     except (TypeError, ValueError):
-        fecha_formateada = "FECHA_PENDIENTE"
+        return "FECHA_PENDIENTE"
+
+
+def nombre_carpeta_peticion(radicado, placa, fecha):
+    """Genera la carpeta temporal con fecha visible en formato AAAA-MM-DD."""
+    fecha_formateada = fecha_para_nombre_carpeta(fecha)
     partes = [
         radicado or "RADICADO_PENDIENTE",
         placa or "PLACA_PENDIENTE",
@@ -3070,26 +3248,22 @@ def nombre_pdf_expediente(
     carpeta="",
     extension=".pdf",
 ):
-    """Genera el PDF raíz con radicado, ubicación y desenlace."""
-    try:
-        fecha_formateada = datetime.date.fromisoformat(
-            str(fecha or "").strip()
-        ).strftime("%d_%m_%Y")
-    except (TypeError, ValueError):
-        fecha_formateada = "FECHA_PENDIENTE"
-    valores = [
-        radicado,
-        placa,
-        caja,
-        folder,
-        carpeta,
-        tipo_caso or "SIN_RECURSO",
+    """Genera el PDF completo con ubicación física en el nombre."""
+    fecha_formateada = fecha_para_nombre_carpeta(fecha)
+    partes = [
+        _token_nombre_documento(radicado),
+        _token_nombre_documento(placa),
+        fecha_formateada,
     ]
-    nombre = "_".join(
-        [_token_nombre_documento(valor) for valor in valores[:2]]
-        + [fecha_formateada]
-        + [_token_nombre_documento(valor) for valor in valores[2:]]
-    )
+    for valor, prefijo in (
+        (caja, "CAJA"),
+        (folder, "FOLDER"),
+        (carpeta, "CARPETA"),
+    ):
+        parte = _normalizar_parte_ubicacion(valor, prefijo)
+        if parte:
+            partes.append(parte)
+    nombre = "_".join(token for token in partes if token)
     return f"{nombre or 'EXPEDIENTE'}{extension.lower()}"
 
 
@@ -3099,21 +3273,22 @@ def clasificar_tipo_caso(texto="", nombre=""):
     if re.search(r"desistim|desestimiento|desistimiento|desiste", evidencia):
         return "Desistimiento"
     if re.search(
-        r"\bcon\s+recurso\b|\brecurso\s+de\s+reposici[oó]n\b|"
-        r"\binterpuso\s+(?:un\s+)?recurso\b|\bpresent[oó]\s+(?:un\s+)?recurso\b|"
-        r"\bse\s+resuelve\s+el\s+recurso\b|\bresoluci[oó]n\s+del\s+recurso\b",
-        evidencia,
-    ):
-        return "Con recurso"
-    if re.search(
-        r"\bsin\s+recurso\b|no\s+interpuso\s+(?:un\s+)?recurso|"
+        r"\bsin\s+recurso\b|no\s+interpuso\s+(?:un\s+)?recurso\b|"
+        r"no\s+se\s+interpuso\s+(?:un\s+)?recurso\b|"
+        r"no\s+present[oó]\s+(?:el\s+|un\s+)?recurso\b|"
         r"sin\s+interponer\s+(?:el\s+)?recurso|"
-        r"\bno\s+present[oó]\s+(?:el\s+|un\s+)?recurso\b|"
         r"\bno\s+se\s+present[oó]\s+recurso\b|"
         r"\bconstancia\s+de\s+ejecutoria\b",
         evidencia,
     ):
         return "Sin recurso"
+    if re.search(
+        r"\bcon\s+recurso\b|\brecurso\s+de\s+reposici[oó]n\b|"
+        r"\bpresent[oó]\s+(?:un\s+)?recurso\b|\binterpuso\s+(?:un\s+)?recurso\b|"
+        r"\bse\s+resuelve\s+el\s+recurso\b|\bresoluci[oó]n\s+del\s+recurso\b",
+        evidencia,
+    ):
+        return "Con recurso"
     return None
 
 
@@ -4292,6 +4467,17 @@ def render_launcher_grid(items):
             unsafe_allow_html=True,
         )
 
+# Keep document classification and naming authoritative in the shared module.
+normalizar_errores_ocr = _document_rules.normalizar_errores_ocr
+componentes_ubicacion = _document_rules.componentes_ubicacion
+nombre_carpeta_expediente = _document_rules.nombre_carpeta_expediente
+fecha_para_nombre_carpeta = _document_rules.fecha_para_nombre_carpeta
+nombre_pdf_expediente = _document_rules.nombre_pdf_expediente
+clasificar_tipo_caso = _document_rules.clasificar_tipo_caso
+clasificar_tipo_documento = _document_rules.clasificar_tipo_documento
+tipos_documentales_detectados = _document_rules.tipos_documentales_detectados
+normalizar_tipo_documental = _document_rules.normalizar_tipo_documental
+
 # --- PANTALLA DE INGRESO / LOGIN ---
 if not st.session_state.get("logged_in", False):
     col_a, col_b, col_c = st.columns([1, 2, 1])
@@ -4783,6 +4969,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
         tipos_carga = set()
         tipos_documentales_carga = set()
         textos_analizados = {}
+        partes_analizadas_por_archivo = {}
         fecha_carga = None
         tipo_caso_detectado = ""
         if archivos_canvas:
@@ -4818,6 +5005,8 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         contenido_analizable = b""
                 if archivo.name.lower().endswith(".pdf"):
                     partes_analisis = separar_pdf_completo(contenido_analizable, tipo_documento)
+                    clave_contenido = huella_contenido(contenido_analizable)
+                    partes_analizadas_por_archivo[clave_contenido] = partes_analisis
                     if partes_analisis and len(partes_analisis) > 1:
                         textos_partes = []
                         for parte in partes_analisis:
@@ -4880,7 +5069,13 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     texto=texto_archivo,
                 )
                 if archivo.name.lower().endswith(".pdf"):
-                    for parte in (separar_pdf_completo(contenido_analizable, tipo_documento) or []):
+                    for parte in (
+                        partes_analizadas_por_archivo.get(
+                            huella_contenido(contenido_analizable),
+                            [],
+                        )
+                        or []
+                    ):
                         if parte.get("texto") or parte.get("contenido"):
                             combinar_datos_detectados(
                                 datos_archivo,
@@ -4914,9 +5109,9 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         "paginas": parte.get("paginas_por_seccion", []),
                     }
                     for parte in (
-                        separar_pdf_completo(
-                            contenido_analizable,
-                            tipo_documento,
+                        partes_analizadas_por_archivo.get(
+                            huella_contenido(contenido_analizable),
+                            [],
                         )
                         if archivo.name.lower().endswith(".pdf")
                         else []
@@ -4929,9 +5124,9 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     tipo_documento,
                 )
                 if archivo.name.lower().endswith(".pdf"):
-                    partes_clasificadas = separar_pdf_completo(
-                        contenido_analizable,
-                        tipo_documento,
+                    partes_clasificadas = partes_analizadas_por_archivo.get(
+                        huella_contenido(contenido_analizable),
+                        [],
                     )
                     tipos_documentales_archivo.update(
                         parte.get("tipo")
@@ -5043,6 +5238,17 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 tipos_documentales_carga.update(
                     tipos_documentales_desde_ia(resultado_ia_automatico)
                 )
+                for partes in partes_analizadas_por_archivo.values():
+                    aplicar_clasificacion_ia_a_partes(
+                        partes,
+                        resultado_ia_automatico,
+                    )
+                tipos_documentales_carga.update(
+                    parte.get("tipo")
+                    for partes in partes_analizadas_por_archivo.values()
+                    for parte in partes
+                    if parte.get("tipo")
+                )
             tipo_caso_ia = normalizar_tipo_caso(
                 (resultado_ia_automatico or {}).get("tipo_caso")
             )
@@ -5081,6 +5287,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     tipo_documento,
                     carga_id,
                     es_complemento=not peticion_incluida,
+                    partes_analizadas=partes_analizadas_por_archivo,
                 )
                 if error_staging:
                     st.warning(error_staging)
@@ -5703,16 +5910,6 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                     staged_folder_id,
                                     carpeta_anual_id,
                                 )
-                        nombre_expediente = nombre_carpeta_peticion(
-                            radicado_padre,
-                            matricula_qx or placa_expediente,
-                            str(fecha_registro_previa),
-                        )
-                        renombrar_carpeta_drive(
-                            drive_service,
-                            staged_folder_id,
-                            nombre_expediente,
-                        )
                         carpeta_expediente_drive_id = staged_folder_id
                     elif staged_folder_id:
                         carpeta_expediente_drive_id = staged_folder_id
@@ -5799,10 +5996,14 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         )
                         contenido_original = archivo.getvalue()
                         if archivo.name.lower().endswith(".pdf"):
-                            partes = separar_pdf_completo(
-                                contenido_original,
-                                tipo_documento,
+                            partes = partes_analizadas_por_archivo.get(
+                                huella_contenido(contenido_original)
                             )
+                            if partes is None:
+                                partes = separar_pdf_completo(
+                                    contenido_original,
+                                    tipo_documento,
+                                )
                             if not partes:
                                 st.warning(
                                     f"El archivo '{archivo.name}' no contiene páginas útiles "

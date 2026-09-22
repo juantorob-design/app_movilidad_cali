@@ -1,5 +1,5 @@
 #define MyAppName "Secretaría de Tránsito y Transporte - Desvinculaciones"
-#define MyAppVersion "1.1.19"
+#define MyAppVersion "1.1.20"
 #define MyAppPublisher "Secretaría de Tránsito y Transporte"
 #define MyAppExeName "SistemaDesvinculaciones.exe"
 #if FileExists("OllamaSetup.exe")

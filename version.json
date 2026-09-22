@@ -1,5 +1,5 @@
 {
-  "version": "1.1.19",
-  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.19/SistemaDesvinculaciones-Setup-1.1.19.exe",
-  "changelog": "Clasifica bloques documentales por páginas, reutiliza el OCR y completa el expediente con IA local."
+  "version": "1.1.20",
+  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.20/SistemaDesvinculaciones-Setup-1.1.20.exe",
+  "changelog": "Centraliza reglas documentales, añade pruebas de regresión y prepara una entrega reproducible."
 }

@@ -59,7 +59,7 @@ try {
             try {
                 Remove-Item -Recurse -Force $rutaCarpeta -ErrorAction Stop
             } catch {
-                Write-Host "Advertencia: No se pudo eliminar completamente '$carpeta'. Continuando..." -ForegroundColor Warning
+                Write-Host "Advertencia: No se pudo eliminar completamente '$carpeta'. Continuando..." -ForegroundColor Yellow
             }
         }
     }
@@ -111,6 +111,17 @@ try {
     $exeGenerado = "$PSScriptRoot\dist\SistemaDesvinculaciones\SistemaDesvinculaciones.exe"
 
     if (Test-Path $exeGenerado) {
+        $editorOrigen = "$PSScriptRoot\dist_pdf_editor\EditorPDFLocal"
+        $editorDestino = "$PSScriptRoot\dist\SistemaDesvinculaciones\EditorPDFLocal"
+        if (Test-Path $editorOrigen) {
+            Write-Host "Incluyendo Editor PDF local en la distribución..." -ForegroundColor Yellow
+            if (Test-Path $editorDestino) {
+                Remove-Item -Recurse -Force $editorDestino
+            }
+            Copy-Item -Recurse -Force $editorOrigen $editorDestino
+        } else {
+            Write-Host "Advertencia: no se encontró dist_pdf_editor\EditorPDFLocal." -ForegroundColor Yellow
+        }
         Write-Host "`n==================================================" -ForegroundColor Green
         Write-Host " ¡Proceso completado exitosamente!" -ForegroundColor Green
         Write-Host " Ejecutable listo en: $exeGenerado" -ForegroundColor White
