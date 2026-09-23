@@ -1,5 +1,5 @@
 {
-  "version": "1.1.22",
-  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.22/SistemaDesvinculaciones-Setup-1.1.22.exe",
-  "changelog": "Corrige definitivamente el empaquetado de reglas documentales y valida la interfaz del ejecutable."
+  "version": "1.1.23",
+  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.23/SistemaDesvinculaciones-Setup-1.1.23.exe",
+  "changelog": "Estabiliza los widgets del formulario, actualiza PyMuPDF y alinea el instalador con el código publicado."
 }
