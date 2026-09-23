@@ -73,9 +73,12 @@ except ImportError:
     Image = None
 
 try:
-    import fitz
+    import pymupdf as fitz
 except ImportError:
-    fitz = None
+    try:
+        import fitz
+    except ImportError:
+        fitz = None
 
 try:
     from rapidocr_onnxruntime import RapidOCR
@@ -5587,7 +5590,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
         if carga_anterior != carga_id:
             for clave, valor in campos_formulario.items():
                 if valor not in (None, ""):
-                    st.session_state[clave] = valor
+                    st.session_state.setdefault(clave, valor)
             st.session_state["_registro_carga_id"] = carga_id
 
         st.subheader("2. Confirmar y completar el expediente")
@@ -5628,11 +5631,11 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     index=TIPOS_CASO.index(tipo_inicial),
                     key=f"tipo_caso_{carga_id}",
                 )
+                st.session_state.setdefault(f"foliacion_{carga_id}", foliacion_inicial)
                 foliacion_registro = st.number_input(
                     "Foliación (hojas)",
                     min_value=0,
                     step=1,
-                    value=foliacion_inicial,
                     key=f"foliacion_{carga_id}",
                     help=(
                         "Se propone el conteo del PDF, pero puedes corregirlo. "

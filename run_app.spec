@@ -81,6 +81,7 @@ hiddenimports = [
     'PIL',
     'PIL.Image',
     'PIL.PngImagePlugin',
+    'pymupdf',
     'fitz',
     'rapidocr_onnxruntime',
     'local_ai_service',
