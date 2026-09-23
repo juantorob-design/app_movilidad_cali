@@ -1,5 +1,5 @@
 {
-  "version": "1.1.25",
-  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.25/SistemaDesvinculaciones-Setup-1.1.25.exe",
-  "changelog": "Integra Ollama Vision local como analista principal de paginas, con evidencia por pagina y OCR como respaldo controlado."
+  "version": "1.1.26",
+  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.26/SistemaDesvinculaciones-Setup-1.1.26.exe",
+  "changelog": "Conserva los campos extraidos por Ollama Vision entre reruns y mantiene evidencia documental por pagina."
 }

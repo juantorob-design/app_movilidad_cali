@@ -5263,6 +5263,13 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                     valores = lote.get(clave)
                                     if isinstance(valores, list):
                                         resultado_visual[clave].extend(valores)
+                                for campo in FORMULARIO_CAMPOS:
+                                    valor = lote.get(campo)
+                                    if (
+                                        campo not in resultado_visual
+                                        or not resultado_visual.get(campo)
+                                    ) and isinstance(valor, (str, int, float)) and str(valor).strip():
+                                        resultado_visual[campo] = valor
                                 combinar_campos_ia(datos_carga, lote)
                         st.session_state[clave_ia] = resultado_visual
                         st.success(
