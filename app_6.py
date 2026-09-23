@@ -92,16 +92,22 @@ except (ImportError, ModuleNotFoundError):
 try:
     from local_ai_service import (
         OLLAMA_MODEL,
+        OLLAMA_TEXT_MODEL,
+        OLLAMA_VISION_MODEL,
         OLLAMA_DOWNLOAD_URL,
         analizar_expediente_local,
+        analizar_paginas_local,
         analisis_a_markdown,
         campos_formulario_desde_ia,
         ollama_disponible,
     )
 except ImportError:
     OLLAMA_MODEL = "qwen2.5:7b"
+    OLLAMA_TEXT_MODEL = OLLAMA_MODEL
+    OLLAMA_VISION_MODEL = OLLAMA_MODEL
     OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
     analizar_expediente_local = None
+    analizar_paginas_local = None
     analisis_a_markdown = None
     campos_formulario_desde_ia = lambda resultado: {}
     ollama_disponible = lambda: False
@@ -2193,6 +2199,25 @@ def extraer_texto_pdf(contenido):
 def extraer_texto_pdf_con_progreso(contenido, progreso):
     """Extrae texto y notifica el avance de OCR sin contaminar la caché."""
     return _extraer_texto_pdf(contenido, progreso=progreso)
+
+
+def paginas_visuales_para_ia(contenido, inicio=1, maximo=4):
+    """Renderiza lotes pequeños para Ollama Vision sin cargar un PDF completo."""
+    if fitz is None or not contenido:
+        return []
+    documento = fitz.open(stream=contenido, filetype="pdf")
+    paginas = []
+    try:
+        limite = min(len(documento), inicio - 1 + maximo)
+        for indice in range(inicio - 1, limite):
+            pixmap = documento[indice].get_pixmap(
+                matrix=fitz.Matrix(0.8, 0.8),
+                alpha=False,
+            )
+            paginas.append((indice + 1, pixmap.tobytes("png")))
+    finally:
+        documento.close()
+    return paginas
 
 
 def normalizar_texto_documento(texto):
@@ -4973,6 +4998,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
         tipos_documentales_carga = set()
         textos_analizados = {}
         partes_analizadas_por_archivo = {}
+        contenidos_visuales_ia = []
         fecha_carga = None
         tipo_caso_detectado = ""
         if archivos_canvas:
@@ -5007,6 +5033,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     except ValueError:
                         contenido_analizable = b""
                 if archivo.name.lower().endswith(".pdf"):
+                    contenidos_visuales_ia.append((archivo.name, contenido_analizable))
                     partes_analisis = separar_pdf_completo(contenido_analizable, tipo_documento)
                     clave_contenido = huella_contenido(contenido_analizable)
                     partes_analizadas_por_archivo[clave_contenido] = partes_analisis
@@ -5194,6 +5221,66 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 " ".join(textos_analizados.values())
             )
             if (
+                analizar_paginas_local is not None
+                and not st.session_state.get(clave_ia)
+                and not st.session_state.get(f"{clave_intento_ia}_vision")
+                and contenidos_visuales_ia
+            ):
+                st.session_state[f"{clave_intento_ia}_vision"] = True
+                if buscar_ollama():
+                    iniciar_servicio_ollama()
+                modelos_locales = (
+                    obtener_modelos_ollama() if ollama_disponible() else []
+                )
+                if OLLAMA_VISION_MODEL in modelos_locales:
+                    try:
+                        resultado_visual = {
+                            "documentos_detectados": [],
+                            "paginas_por_seccion": [],
+                            "faltantes": [],
+                        }
+                        for nombre_pdf, contenido_pdf in contenidos_visuales_ia:
+                            total_paginas = len(
+                                fitz.open(stream=contenido_pdf, filetype="pdf")
+                            ) if fitz is not None else 0
+                            for inicio_pagina in range(1, total_paginas + 1, 4):
+                                paginas = paginas_visuales_para_ia(
+                                    contenido_pdf,
+                                    inicio=inicio_pagina,
+                                    maximo=4,
+                                )
+                                if not paginas:
+                                    continue
+                                with st.spinner(
+                                    f"Ollama Vision analiza {nombre_pdf}: "
+                                    f"páginas {inicio_pagina}-{min(inicio_pagina + 3, total_paginas)}..."
+                                ):
+                                    lote = analizar_paginas_local(
+                                        paginas,
+                                        modelo=OLLAMA_VISION_MODEL,
+                                    )
+                                for clave in ("documentos_detectados", "paginas_por_seccion", "faltantes"):
+                                    valores = lote.get(clave)
+                                    if isinstance(valores, list):
+                                        resultado_visual[clave].extend(valores)
+                                combinar_campos_ia(datos_carga, lote)
+                        st.session_state[clave_ia] = resultado_visual
+                        st.success(
+                            "Ollama Vision analizó las páginas con evidencia visual. "
+                            "Revisa los campos y el checklist antes de guardar."
+                        )
+                    except (ConnectionError, TimeoutError, ValueError) as error:
+                        st.warning(
+                            f"Ollama Vision no pudo analizar las páginas: {error}. "
+                            "Se conserva el OCR como respaldo explícito."
+                        )
+                else:
+                    st.info(
+                        f"El modelo visual `{OLLAMA_VISION_MODEL}` no está instalado. "
+                        "La carga continuará con OCR y análisis textual hasta completar "
+                        "la descarga del modelo visual."
+                    )
+            if (
                 analizar_expediente_local is not None
                 and analisis_a_markdown is not None
                 and texto_ocr_completo
@@ -5212,7 +5299,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             ):
                                 resultado_ia = analizar_expediente_local(
                                     texto_ocr_completo,
-                                    modelo=OLLAMA_REQUIRED_MODEL,
+                                    modelo=OLLAMA_TEXT_MODEL,
                                 )
                             st.session_state[clave_ia] = resultado_ia
                             combinar_campos_ia(datos_carga, resultado_ia)

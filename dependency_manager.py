@@ -29,7 +29,7 @@ APP_DATA_DIR = Path(
     )
 ) / "SistemaDesvinculaciones"
 BIN_DIR = APP_DATA_DIR / "bin"
-OLLAMA_MODEL = os.environ.get("SISTEMA_OLLAMA_MODEL", "qwen2.5:7b")
+OLLAMA_MODEL = os.environ.get("SISTEMA_OLLAMA_MODEL", "qwen2.5vl:3b")
 OLLAMA_MANIFEST_URL = os.environ.get("SISTEMA_OLLAMA_MANIFEST_URL", "").strip()
 ALLOWED_MANIFEST_HOSTS = {
     "raw.githubusercontent.com",

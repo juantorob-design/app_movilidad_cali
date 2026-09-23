@@ -1,8 +1,8 @@
 """Análisis documental local mediante Ollama.
 
-El texto nunca sale del equipo: Ollama se consulta únicamente en localhost.
-El servicio es opcional y el flujo OCR/reglas continúa funcionando si no está
-instalado o si el modelo no está disponible.
+El contenido nunca sale del equipo: Ollama se consulta únicamente en localhost.
+La visión local es la ruta principal para escaneos; el análisis textual
+alimentado por OCR queda como respaldo explícito.
 """
 
 from __future__ import annotations
@@ -10,19 +10,22 @@ from __future__ import annotations
 import json
 import os
 import re
+import base64
 from typing import Any
 
 import requests
 
 
 OLLAMA_URL = os.environ.get("SISTEMA_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
-OLLAMA_MODEL = os.environ.get("SISTEMA_OLLAMA_MODEL", "qwen2.5:7b")
-OLLAMA_TIMEOUT = int(os.environ.get("SISTEMA_OLLAMA_TIMEOUT", "300"))
+OLLAMA_MODEL = os.environ.get("SISTEMA_OLLAMA_MODEL", "qwen2.5vl:3b")
+OLLAMA_TEXT_MODEL = os.environ.get("SISTEMA_OLLAMA_TEXT_MODEL", "qwen2.5:7b")
+OLLAMA_VISION_MODEL = os.environ.get("SISTEMA_OLLAMA_VISION_MODEL", OLLAMA_MODEL)
+OLLAMA_TIMEOUT = int(os.environ.get("SISTEMA_OLLAMA_TIMEOUT", "600"))
 OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
 
 DEFAULT_OLLAMA_OPTIONS = {
     "temperature": 0.1,
-    "num_predict": 2048,
+    "num_predict": 1536,
     "repeat_penalty": 1.05,
     "seed": 42,
 }
@@ -117,6 +120,16 @@ FORMULARIO_CAMPOS = (
 )
 
 
+def _validar_resultado_ia(resultado: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(resultado, dict):
+        raise ValueError("La IA local no devolvió un objeto JSON.")
+    for clave in ("documentos_detectados", "paginas_por_seccion", "faltantes"):
+        valor = resultado.get(clave)
+        if valor is not None and not isinstance(valor, list):
+            raise ValueError(f"La IA local devolvió `{clave}` con formato inválido.")
+    return resultado
+
+
 def ollama_disponible() -> bool:
     """Comprueba el servicio local sin enviar contenido documental."""
     try:
@@ -190,11 +203,86 @@ def analizar_expediente_local(texto: str, *, modelo: str | None = None) -> dict[
         )
         response.raise_for_status()
         payload = response.json()
-        return _extraer_json(payload.get("message", {}).get("content", ""))
+        return _validar_resultado_ia(
+            _extraer_json(payload.get("message", {}).get("content", ""))
+        )
     except requests.RequestException as error:
         raise ConnectionError(f"No fue posible consultar la IA local: {error}") from error
     except (ValueError, TypeError, json.JSONDecodeError) as error:
         raise ValueError(f"La IA local devolvió una respuesta inválida: {error}") from error
+
+
+def analizar_paginas_local(
+    paginas: list[tuple[int, bytes]],
+    *,
+    modelo: str | None = None,
+) -> dict[str, Any]:
+    """Analiza páginas renderizadas con un modelo Ollama compatible con visión.
+
+    Cada tupla conserva el número de página para que la IA deba justificar la
+    clasificación y el formulario con evidencia verificable.
+    """
+    if not paginas:
+        raise ValueError("No hay páginas renderizadas para analizar.")
+    imagenes = []
+    referencias = []
+    for numero, contenido in paginas:
+        if not isinstance(numero, int) or numero < 1 or not contenido:
+            raise ValueError("Cada página visual debe tener número y contenido.")
+        imagenes.append(base64.b64encode(contenido).decode("ascii"))
+        referencias.append(str(numero))
+    modelo_vision = modelo or OLLAMA_VISION_MODEL
+    if not ollama_disponible():
+        raise ConnectionError("Ollama no está disponible en localhost.")
+    prompt = (
+        "Analiza visualmente cada página adjunta de forma independiente. "
+        "Las páginas están numeradas en el mismo orden de `PÁGINA` indicado en el mensaje. "
+        "No clasifiques una etapa porque otra página la mencione: exige encabezado, firma, "
+        "fórmula administrativa o evidencia propia. Devuelve únicamente el JSON del esquema "
+        "del sistema. En `documentos_detectados` y `paginas_por_seccion` incluye siempre "
+        "las páginas que sustentan cada hallazgo. Si una página no es legible, deja el campo "
+        "vacío y añade una observación en `faltantes`. No uses etiquetas de interfaz como "
+        "evidencia documental."
+    )
+    mensajes = [
+        {
+            "role": "system",
+            "content": SYSTEM_PROMPT
+            + "\nLa fuente prioritaria son las imágenes; el texto debe salir de la página visible.",
+        },
+        {
+            "role": "user",
+            "content": prompt
+            + "\n\n"
+            + "\n".join(f"PÁGINA {numero}" for numero in referencias),
+            "images": imagenes,
+        },
+    ]
+    try:
+        response = requests.post(
+            f"{OLLAMA_URL}/api/chat",
+            json={
+                "model": modelo_vision,
+                "messages": mensajes,
+                "stream": False,
+                "format": "json",
+                "options": DEFAULT_OLLAMA_OPTIONS.copy(),
+            },
+            timeout=OLLAMA_TIMEOUT,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return _validar_resultado_ia(
+            _extraer_json(payload.get("message", {}).get("content", ""))
+        )
+    except requests.RequestException as error:
+        raise ConnectionError(
+            f"No fue posible consultar la visión local de Ollama: {error}"
+        ) from error
+    except (ValueError, TypeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"La visión local devolvió una respuesta inválida: {error}"
+        ) from error
 
 
 def analisis_a_markdown(resultado: dict[str, Any]) -> str:
