@@ -1,5 +1,5 @@
 {
-  "version": "1.1.26",
-  "download_url": "https://github.com/juantorob-design/app_movilidad_cali/releases/download/v1.1.26/SistemaDesvinculaciones-Setup-1.1.26.exe",
-  "changelog": "Conserva los campos extraidos por Ollama Vision entre reruns y mantiene evidencia documental por pagina."
+  "version": "1.1.27",
+  "download_url": "https://drive.google.com/uc?export=download&id=1An31iuLLA9lQE8SYYadYckM0gUY18W_j",
+  "changelog": "Corrige la ruta de Drive PDFS Escaneados, optimiza Ollama Vision y reutiliza los bloques OCR al guardar."
 }

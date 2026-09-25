@@ -132,8 +132,11 @@ SUBIDA`, separadas del campo `FUNCIONARIO QUE DESVINCULA`.
 La estructura esperada es:
 
 ```text
-Peticion/
-  Pendientes/
+PDFS Escaneados/
+  Peticion/
+    Por_vincular/
+      PLACA/
+    RADICADO_PADRE_PLACA_FECHA_UBICACION/  (staging antes de guardar)
   AÑO/
     RADICADO_PADRE_PLACA_FECHA_UBICACION/
       Solicitud/
@@ -152,7 +155,8 @@ existir un PDF completo en la raíz del expediente. Al agregar complementos:
 1. Se conserva el documento anterior.
 2. Se evita subir duplicados.
 3. Se incorpora el complemento a la lista documental.
-4. Se reconstruye el PDF completo en el mismo año y expediente.
+4. Al guardar el registro, se mueve la carpeta al año correspondiente y se
+   reconstruye el PDF completo en la raíz del expediente.
 5. El registro local y Google Sheets conservan los enlaces del PDF completo y
    de cada documento individual para consulta y descarga.
 6. La lectura utiliza RapidOCR con ONNX Runtime, una IA local incluida en el
@@ -168,11 +172,11 @@ existir un PDF completo en la raíz del expediente. Al agregar complementos:
    que Windows tenga un controlador gráfico funcional.
 9. Al terminar el análisis de una carga, las partes detectadas se suben
    inmediatamente a la carpeta del expediente en Drive. Si todavía no se conoce
-   la fecha de la petición, se conservan en una carpeta identificada dentro de
-   `Pendientes`.
-10. El guardado reutiliza las partes ya subidas, mueve la carpeta pendiente al
-    año correcto cuando aparece la fecha, reconstruye el PDF completo sin hojas
-    blancas y sustituye la versión unificada anterior.
+   la fecha de la petición, se conservan en
+   `PDFS Escaneados/Peticion/Por_vincular/PLACA`.
+10. El guardado reutiliza las partes ya subidas, mueve la carpeta desde
+    `PDFS Escaneados/Peticion` a `PDFS Escaneados/AÑO`, reconstruye el PDF
+    completo sin hojas blancas y sustituye la versión unificada anterior.
 11. La hoja `BD_DESV` conserva una ubicación digital por registro mediante
     `ACCESO DIGITAL`, `DRIVE FOLDER`, `DOCUMENTOS DRIVE` y `PDF UNIFICADO`.
     La aplicación solo muestra enlaces directos y habilita descargas a usuarios
@@ -182,9 +186,10 @@ existir un PDF completo en la raíz del expediente. Al agregar complementos:
     La separación por tipo documental debe conservar el PDF completo y no
     descartar páginas.
 
-Los archivos sin fecha se guardan en `Pendientes` hasta que el expediente tenga
-fecha de solicitud; después se trasladan al año y subcarpeta documental
-correspondientes.
+Los archivos sin expediente principal se guardan en
+`PDFS Escaneados/Peticion/Por_vincular/PLACA` hasta que el expediente tenga
+radicado y fecha; después se trasladan a la carpeta anual del expediente y a
+su subcarpeta documental correspondiente.
 
 ## Navegación externa
 

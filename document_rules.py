@@ -270,6 +270,8 @@ def documentos_faltantes(registro):
         for documento in registro.get("canvas_paginas", [])
         if documento.get("tipo_documento")
     }
+    if registro.get("tipo_caso") == "Con recurso":
+        anexados.add("Recurso")
     faltantes = []
     notificaciones = {
         "Notificación",

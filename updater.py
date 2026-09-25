@@ -10,7 +10,7 @@ import time
 from urllib.parse import urlparse
 
 # Versión actual de la aplicación instalada
-CURRENT_VERSION = "1.1.26"
+CURRENT_VERSION = "1.1.27"
 
 # GitHub Raw será la fuente pública de versiones cuando el repositorio se publique.
 DEFAULT_VERSION_CHECK_URL = (

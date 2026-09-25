@@ -1,11 +1,11 @@
 #define MyAppName "Secretaría de Tránsito y Transporte - Desvinculaciones"
-#define MyAppVersion "1.1.26"
+#define MyAppVersion "1.1.27"
 #define MyAppPublisher "Secretaría de Tránsito y Transporte"
 #define MyAppExeName "SistemaDesvinculaciones.exe"
 #if FileExists("OllamaSetup.exe")
   #define HasOllamaInstaller
 #endif
-#if DirExists("dist_pdf_editor\EditorPDFLocal")
+#if FileExists("dist\SistemaDesvinculaciones\EditorPDFLocal\EditorPDFLocal.exe")
   #define HasPdfEditor
 #endif
 

@@ -122,6 +122,38 @@ try {
         } else {
             Write-Host "Advertencia: no se encontró dist_pdf_editor\EditorPDFLocal." -ForegroundColor Yellow
         }
+
+        $archivosFuncionales = @(
+            $exeGenerado,
+            "$PSScriptRoot\dist\SistemaDesvinculaciones\EditorPDFLocal\EditorPDFLocal.exe",
+            "$PSScriptRoot\dist\SistemaDesvinculaciones\_internal\rapidocr_onnxruntime\config.yaml",
+            "$PSScriptRoot\dist\SistemaDesvinculaciones\_internal\streamlit_pdf\frontend\build"
+        )
+        $faltantesDistribucion = @(
+            $archivosFuncionales | Where-Object { -not (Test-Path $_) }
+        )
+        if ($faltantesDistribucion.Count -gt 0) {
+            Write-Host "ERROR: La distribución quedó incompleta. Faltan:" -ForegroundColor Red
+            $faltantesDistribucion | ForEach-Object { Write-Host " - $_" -ForegroundColor Red }
+            return
+        }
+
+        $materialExcluido = Get-ChildItem `
+            -Path "$PSScriptRoot\dist\SistemaDesvinculaciones" `
+            -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -in @(
+                    "presentacion_dashboard.py",
+                    "abrir_presentacion.ps1",
+                    "GUIA_OPERATIVA_ACCESOS_SISTEMA.docx"
+                )
+            }
+        if ($materialExcluido) {
+            Write-Host "ERROR: La distribución contiene material excluido:" -ForegroundColor Red
+            $materialExcluido | ForEach-Object { Write-Host " - $($_.FullName)" -ForegroundColor Red }
+            return
+        }
+
         Write-Host "`n==================================================" -ForegroundColor Green
         Write-Host " ¡Proceso completado exitosamente!" -ForegroundColor Green
         Write-Host " Ejecutable listo en: $exeGenerado" -ForegroundColor White

@@ -140,6 +140,7 @@ OCR_MAX_PAGES = None
 # reduce el costo del OCR frente al renderizado anterior de 1.5x.
 OCR_RENDER_SCALE = 1.2
 OCR_CACHE_VERSION = "3"
+BLANK_PAGE_DARK_PIXEL_RATIO = 0.005
 _ocr_persistent_cache = None
 
 
@@ -363,7 +364,7 @@ SUPABASE_OAUTH_REDIRECT = os.environ.get(
 ).strip()
 DRIVE_FOLDER_ID = os.environ.get(
     "SISTEMA_DRIVE_FOLDER_ID",
-    "1HQtfhjWv9M_PljH4mfP-qdke9d5nyGTF",
+    "1wA5LrPmk5vcgG3YP2LgROeNvcupJK2Gs",
 ).strip()
 DRIVE_REQUEST_FOLDER_NAME = "Peticion"
 DRIVE_UNLINKED_FOLDER_NAME = "Por_vincular"
@@ -470,6 +471,13 @@ def asegurador_registro_hoja(service, spreadsheet_id=None):
             spreadsheetId=target_id,
             range=rango,
         ).execute().get("values", [])
+        asegurar_dimension_grid(
+            service,
+            target_id,
+            hoja_bd,
+            filas=1000,
+            columnas=max(len(COLUMNAS_SHEET_OFICIALES), 43),
+        )
         if valores and any(str(celda).strip() for celda in valores[0]):
             encabezados = [normalizar_campo_sheet(valor) for valor in valores[0]]
             if any(clave in encabezados for clave in ("FECHASOLICITUD", "PLACA", "RADPADRE")):
@@ -483,6 +491,47 @@ def asegurador_registro_hoja(service, spreadsheet_id=None):
         return True
     except Exception:
         return False
+
+
+def asegurar_dimension_grid(service, spreadsheet_id, nombre_hoja, filas, columnas):
+    """Amplía la cuadrícula antes de escribir rangos nuevos."""
+    if not service or not spreadsheet_id or not nombre_hoja:
+        return
+    metadata = service.spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        fields="sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))",
+    ).execute()
+    hoja = next(
+        (
+            item.get("properties", {})
+            for item in metadata.get("sheets", [])
+            if item.get("properties", {}).get("title") == nombre_hoja
+        ),
+        None,
+    )
+    if not hoja:
+        return
+    grid = hoja.get("gridProperties", {})
+    cambios = {}
+    if int(grid.get("rowCount") or 0) < filas:
+        cambios["rowCount"] = filas
+    if int(grid.get("columnCount") or 0) < columnas:
+        cambios["columnCount"] = columnas
+    if cambios:
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={
+                "requests": [{
+                    "updateSheetProperties": {
+                        "properties": {
+                            "sheetId": hoja.get("sheetId"),
+                            "gridProperties": cambios,
+                        },
+                        "fields": ",".join(f"gridProperties.{clave}" for clave in cambios),
+                    }
+                }]
+            },
+        ).execute()
 
 
 def asegurar_hoja_bd_desv(service):
@@ -1436,41 +1485,116 @@ def buscar_carpeta_drive(service, parent_id, folder_name):
         return None
 
 
+def buscar_carpeta_drive_por_nombres(service, parent_id, nombres):
+    """Busca una carpeta hija aceptando diferencias de mayúsculas y pluralización."""
+    if not service or not parent_id:
+        return None
+    candidatos = {
+        re.sub(r"[^a-z0-9]", "", str(nombre or "").casefold())
+        for nombre in nombres
+        if str(nombre or "").strip()
+    }
+    if not candidatos:
+        return None
+    try:
+        carpetas = service.files().list(
+            q=(
+                f"'{parent_id}' in parents and trashed = false "
+                "and mimeType = 'application/vnd.google-apps.folder'"
+            ),
+            fields="files(id,name,parents)",
+            pageSize=1000,
+        ).execute().get("files", [])
+        for carpeta in carpetas:
+            clave = re.sub(
+                r"[^a-z0-9]",
+                "",
+                str(carpeta.get("name", "")).casefold(),
+            )
+            if clave in candidatos:
+                return carpeta.get("id")
+    except Exception as error:
+        st.warning(
+            "No fue posible localizar la carpeta documental en Drive: "
+            f"{error}"
+        )
+    return None
+
+
+def carpeta_primaria_documentos_drive(service):
+    """Devuelve la raíz documental real: preferiblemente 'PDFS Escaneados' bajo la base configurada."""
+    if not service or not DRIVE_FOLDER_ID:
+        return None
+    try:
+        metadata = service.files().get(fileId=DRIVE_FOLDER_ID, fields="id,name").execute()
+        nombre_base = str(metadata.get("name", "")).strip().casefold()
+        if nombre_base == "pdfs escaneados":
+            return DRIVE_FOLDER_ID
+    except Exception:
+        pass
+
+    carpeta_documental = buscar_carpeta_drive_por_nombres(
+        service,
+        DRIVE_FOLDER_ID,
+        ("PDFS Escaneados", "PDFS ESCANEADOS"),
+    )
+    if carpeta_documental:
+        return carpeta_documental
+
+    creada = buscar_o_crear_carpeta_drive(service, DRIVE_FOLDER_ID, "PDFS Escaneados")
+    return creada or DRIVE_FOLDER_ID
+
+
+def carpeta_drive_para_peticiones(service):
+    """Obtiene PDFS Escaneados/Peticion, raíz única de expedientes y pendientes."""
+    base_id = carpeta_primaria_documentos_drive(service)
+    if not base_id:
+        return None
+    return (
+        buscar_carpeta_drive_por_nombres(
+            service,
+            base_id,
+            ("Peticion", "Peticiones"),
+        )
+        or buscar_o_crear_carpeta_drive(
+            service,
+            base_id,
+            DRIVE_REQUEST_FOLDER_NAME,
+        )
+    )
+
+
 def carpeta_drive_para_fecha(service, fecha):
-    """Obtiene Google Drive/PDFS Escaneados/AÑO para la fecha confirmada."""
+    """Obtiene PDFS Escaneados/AÑO para el expediente confirmado."""
+    base_id = carpeta_primaria_documentos_drive(service)
+    if not base_id:
+        return None
     try:
         fecha_obj = datetime.date.fromisoformat(str(fecha or "").strip())
-        anio = str(fecha_obj.year)
-        return buscar_o_crear_carpeta_drive(service, DRIVE_FOLDER_ID, anio)
     except (TypeError, ValueError):
         st.error(
             "No se puede clasificar el documento en Drive porque la fecha de "
             "la petición no es válida. Usa el formato AAAA-MM-DD."
         )
         return None
+    return buscar_o_crear_carpeta_drive(service, base_id, str(fecha_obj.year))
 
 
 def carpeta_drive_para_expediente(service, fecha, radicado, placa, ubicacion):
-    """Obtiene la ruta final del expediente en Drive, con nombre y ubicación consistentes."""
+    """Obtiene PDFS Escaneados/AÑO/RADICADO... para el expediente confirmado."""
     carpeta_anual_id = carpeta_drive_para_fecha(service, fecha)
     if not carpeta_anual_id:
         return None
 
-    caja, folder, carpeta = componentes_ubicacion(ubicacion)
-    carpeta_actual_id = carpeta_anual_id
-    for nombre in (caja, folder, carpeta):
-        if not nombre:
-            continue
-        siguiente = buscar_o_crear_carpeta_drive(service, carpeta_actual_id, nombre)
-        if not siguiente:
-            return None
-        carpeta_actual_id = siguiente
-
     nombre_expediente = nombre_carpeta_expediente(radicado, placa, fecha, ubicacion)
     if not nombre_expediente:
-        return carpeta_actual_id
+        return carpeta_anual_id
 
-    return buscar_o_crear_carpeta_drive(service, carpeta_actual_id, nombre_expediente)
+    return buscar_o_crear_carpeta_drive(
+        service,
+        carpeta_anual_id,
+        nombre_expediente,
+    )
 
 
 def componentes_ubicacion(ubicacion):
@@ -1534,33 +1658,25 @@ def nombre_raiz_expediente(radicado, placa, fecha):
 
 
 def carpeta_drive_para_staging(service, radicado, placa, fecha):
-    """Obtiene Peticion/RADICADO_PLACA_FECHA para el staging temporal."""
-    escaneados_id = buscar_o_crear_carpeta_drive(
-        service,
-        DRIVE_FOLDER_ID,
-        DRIVE_REQUEST_FOLDER_NAME,
-    )
-    if not escaneados_id:
+    """Obtiene PDFs Escaneados/Peticion/RADICADO_PLACA_FECHA para el staging temporal."""
+    peticiones_id = carpeta_drive_para_peticiones(service)
+    if not peticiones_id:
         return None
     return buscar_o_crear_carpeta_drive(
         service,
-        escaneados_id,
+        peticiones_id,
         nombre_carpeta_peticion(radicado, placa, fecha),
     )
 
 
 def carpeta_drive_para_complementos_sin_vincular(service, placa):
-    """Obtiene Peticion/Por_vincular/PLACA para anexos sin expediente padre."""
-    peticion_id = buscar_o_crear_carpeta_drive(
-        service,
-        DRIVE_FOLDER_ID,
-        DRIVE_REQUEST_FOLDER_NAME,
-    )
-    if not peticion_id:
+    """Obtiene PDFs Escaneados/Peticion/Por_vincular/PLACA para anexos sin expediente padre."""
+    peticiones_id = carpeta_drive_para_peticiones(service)
+    if not peticiones_id:
         return None
     bandeja_id = buscar_o_crear_carpeta_drive(
         service,
-        peticion_id,
+        peticiones_id,
         DRIVE_UNLINKED_FOLDER_NAME,
     )
     if not bandeja_id:
@@ -1574,14 +1690,11 @@ def carpeta_drive_para_complementos_sin_vincular(service, placa):
 
 def fusionar_complementos_sin_vincular(service, placa, carpeta_expediente_id):
     """Mueve complementos de Por_vincular a un expediente recién localizado."""
-    origen = buscar_carpeta_drive(
-        service,
-        buscar_carpeta_drive(
-            service,
-            DRIVE_FOLDER_ID,
-            DRIVE_REQUEST_FOLDER_NAME,
-        ),
-        DRIVE_UNLINKED_FOLDER_NAME,
+    peticiones_id = carpeta_drive_para_peticiones(service)
+    origen = (
+        buscar_carpeta_drive(service, peticiones_id, DRIVE_UNLINKED_FOLDER_NAME)
+        if peticiones_id
+        else None
     )
     origen = buscar_carpeta_drive(
         service,
@@ -1622,26 +1735,25 @@ def fusionar_complementos_sin_vincular(service, placa, carpeta_expediente_id):
     return movidos
 
 def buscar_carpeta_expediente_drive(service, fecha, radicado, placa):
-    """Busca la raíz de un expediente primero en Peticion y luego por año."""
+    """Busca un expediente pendiente en Peticion o confirmado dentro del año."""
     if not service:
+        return None
+    base_id = carpeta_primaria_documentos_drive(service)
+    if not base_id:
         return None
     nombre = nombre_raiz_expediente(radicado, placa, fecha)
     nombre_legacy = nombre_carpeta_peticion(radicado, placa, fecha)
-    peticion_id = buscar_carpeta_drive(
-        service,
-        DRIVE_FOLDER_ID,
-        DRIVE_REQUEST_FOLDER_NAME,
-    )
-    if peticion_id:
-        encontrada = buscar_carpeta_drive(service, peticion_id, nombre)
+    peticiones_id = carpeta_drive_para_peticiones(service)
+    if peticiones_id:
+        encontrada = buscar_carpeta_drive(service, peticiones_id, nombre)
         if not encontrada and nombre_legacy != nombre:
-            encontrada = buscar_carpeta_drive(service, peticion_id, nombre_legacy)
+            encontrada = buscar_carpeta_drive(service, peticiones_id, nombre_legacy)
         if encontrada:
             return encontrada
         if placa:
             coincidencias = service.files().list(
                 q=(
-                    f"'{peticion_id}' in parents and trashed = false "
+                    f"'{peticiones_id}' in parents and trashed = false "
                     "and mimeType = 'application/vnd.google-apps.folder' "
                     f"and name contains '{_token_nombre_documento(placa)}'"
                 ),
@@ -1654,11 +1766,7 @@ def buscar_carpeta_expediente_drive(service, fecha, radicado, placa):
         fecha_obj = datetime.date.fromisoformat(str(fecha or "").strip())
     except (TypeError, ValueError):
         return None
-    anual_id = buscar_carpeta_drive(
-        service,
-        DRIVE_FOLDER_ID,
-        str(fecha_obj.year),
-    )
+    anual_id = buscar_carpeta_drive(service, base_id, str(fecha_obj.year))
     if not anual_id:
         return None
     encontrada = buscar_carpeta_drive(service, anual_id, nombre)
@@ -1786,7 +1894,7 @@ def preparar_carga_drive(
     es_complemento=False,
     partes_analizadas=None,
 ):
-    """Sube de inmediato las partes detectadas; el PDF unificado se crea al guardar."""
+    """Sube el PDF completo temporal y sus partes documentales al staging."""
     if not service:
         return [], None, "Google Drive no está autenticado."
     try:
@@ -1821,10 +1929,44 @@ def preparar_carga_drive(
             contenido = archivo.getvalue()
             if not archivo.name.lower().endswith(".pdf"):
                 contenido = convertir_imagen_a_pdf(contenido, archivo.name)
-            partes = (
-                list((partes_analizadas or {}).get(huella_contenido(contenido), []))
-                or separar_pdf_completo(contenido, tipo_fallback)
+            nombre_temporal = (
+                f"{nombre_carpeta_peticion(radicado, placa, fecha)}_COMPLETO.pdf"
             )
+            existente_completo = buscar_archivo_drive(
+                service,
+                carpeta_expediente,
+                nombre_temporal,
+                contenido,
+            )
+            if existente_completo:
+                completo_id = existente_completo.get("id")
+                completo_url = existente_completo.get("webViewLink")
+            else:
+                completo_id, completo_url = subir_archivo_a_drive(
+                    service,
+                    io.BytesIO(contenido),
+                    nombre_temporal,
+                    carpeta_expediente,
+                )
+            documentos.append({
+                "nombre": nombre_temporal,
+                "nombre_original": archivo.name,
+                "tipo_documento": "Expediente completo",
+                "drive_id": completo_id,
+                "drive_url": completo_url,
+                "drive_folder_id": carpeta_expediente,
+                "huella": huella_contenido(contenido),
+                "paginas": 0,
+                "texto_analizado": "",
+                "carga_id": carga_id,
+                "staged": True,
+                "es_pdf_completo": True,
+            })
+            clave_partes = huella_contenido(contenido)
+            if partes_analizadas is not None and clave_partes in partes_analizadas:
+                partes = list(partes_analizadas.get(clave_partes) or [])
+            else:
+                partes = separar_pdf_completo(contenido, tipo_fallback)
             for numero, parte in enumerate(partes, start=1):
                 tipo = parte.get("tipo") or tipo_fallback or "Otro"
                 carpeta_tipo = carpeta_drive_para_documento(
@@ -1909,6 +2051,22 @@ def mover_archivo_drive(service, file_id, carpeta_destino_id):
         return True
     except Exception as error:
         st.warning(f"No fue posible mover el pendiente al expediente: {error}")
+        return False
+
+
+def renombrar_archivo_drive(service, file_id, nombre):
+    """Renombra un archivo de Drive sin cambiar su carpeta."""
+    if not service or not file_id or not nombre:
+        return False
+    try:
+        service.files().update(
+            fileId=file_id,
+            body={"name": nombre},
+            fields="id,name,parents,webViewLink",
+        ).execute()
+        return True
+    except Exception as error:
+        st.warning(f"No fue posible renombrar el archivo del expediente: {error}")
         return False
 
 
@@ -2171,6 +2329,112 @@ def _extraer_texto_pdf(contenido, progreso=None):
         return texto
 
 
+def extraer_paginas_hibridas_pdf(contenido, progreso=None):
+    """Extrae texto por página y selecciona solo páginas débiles para visión."""
+    if fitz is None:
+        return [], ""
+    try:
+        reader = PdfReader(io.BytesIO(contenido)) if PdfReader is not None else None
+        textos_digitales = [
+            (pagina.extract_text() or "").replace("\xa0", " ")
+            for pagina in (reader.pages if reader else [])
+        ]
+        documento = fitz.open(stream=contenido, filetype="pdf")
+        paginas = []
+        for indice, pagina in enumerate(documento):
+            if OCR_MAX_PAGES is not None and indice >= OCR_MAX_PAGES:
+                break
+            texto_digital = (
+                normalizar_texto_documento(textos_digitales[indice])
+                if indice < len(textos_digitales)
+                else ""
+            )
+            texto_ocr = ""
+            pixmap = pagina.get_pixmap(matrix=fitz.Matrix(0.35, 0.35), alpha=False)
+            pagina_blanca = pagina_pixeles_blancos(pixmap)
+            if not texto_digital and not pagina_blanca:
+                texto_ocr = obtener_texto_ocr_pagina(
+                    contenido,
+                    indice,
+                    pagina,
+                    escala=OCR_RENDER_SCALE,
+                )
+            texto = normalizar_errores_ocr(" ".join(
+                parte for parte in (texto_digital, texto_ocr) if parte
+            ))
+            palabras = re.findall(r"[A-Za-zÁÉÍÓÚáéíóúÑñ0-9]{2,}", texto)
+            caracteres_invalidos = len(re.findall(r"[^\w\sÁÉÍÓÚáéíóúÑñ.,;:/#()%-]", texto))
+            critico = (
+                len(palabras) < 8
+                or (len(texto) > 40 and caracteres_invalidos / len(texto) > 0.15)
+                or bool(re.search(r"firma|sello|manuscrit", texto, re.IGNORECASE))
+            )
+            paginas.append({
+                "pagina": indice + 1,
+                "texto": texto,
+                "pagina_blanca": pagina_blanca and not texto_digital and not texto_ocr,
+                "critica": critico,
+            })
+            if progreso:
+                progreso(indice + 1, len(documento))
+        documento.close()
+        texto_completo = normalizar_texto_documento(
+            " ".join(item["texto"] for item in paginas if item["texto"])
+        )
+        return paginas, texto_completo
+    except Exception as error:
+        global _ocr_last_error
+        _ocr_last_error = str(error)
+        return [], ""
+
+
+def separar_pdf_con_textos(contenido, tipo_fallback, paginas_hibridas):
+    """Separa bloques usando OCR ya calculado y descarta páginas casi blancas."""
+    if PdfReader is None or PdfWriter is None:
+        return [{"contenido": contenido, "tipo": tipo_fallback, "paginas": 0}]
+    lector = PdfReader(io.BytesIO(contenido))
+    grupos = []
+    actual = None
+    for indice, pagina in enumerate(lector.pages):
+        item = (
+            paginas_hibridas[indice]
+            if indice < len(paginas_hibridas)
+            else {"texto": ""}
+        )
+        texto = item.get("texto", "")
+        if item.get("pagina_blanca") and len(texto.strip()) < 8:
+            continue
+        tipo = clasificar_tipo_documento(texto, "")
+        tipo = tipo or (actual["tipo"] if actual else detectar_estado_documento(
+            texto, tipo_fallback
+        ))
+        if actual and actual["tipo"] == tipo:
+            actual["paginas"].append(pagina)
+            actual["indices"].append(indice)
+        else:
+            actual = {"tipo": tipo, "paginas": [pagina], "indices": [indice]}
+            grupos.append(actual)
+    resultado = []
+    for grupo in grupos:
+        escritor = PdfWriter()
+        for pagina in grupo["paginas"]:
+            escritor.add_page(pagina)
+        salida = io.BytesIO()
+        escritor.write(salida)
+        resultado.append({
+            "contenido": salida.getvalue(),
+            "tipo": grupo["tipo"],
+            "paginas": len(grupo["paginas"]),
+            "paginas_por_seccion": [indice + 1 for indice in grupo["indices"]],
+            "texto": normalizar_texto_documento(" ".join(
+                paginas_hibridas[indice].get("texto", "")
+                for indice in grupo["indices"]
+                if indice < len(paginas_hibridas)
+            )),
+        })
+    return resultado
+
+
 def extraer_texto_por_partes_pdf(contenido, tipo_fallback="Solicitud"):
     """Procesa primero por fragments del expediente para no OCRar el PDF completo."""
     try:
@@ -2211,10 +2475,11 @@ def paginas_visuales_para_ia(contenido, inicio=1, maximo=4):
         limite = min(len(documento), inicio - 1 + maximo)
         for indice in range(inicio - 1, limite):
             pixmap = documento[indice].get_pixmap(
-                matrix=fitz.Matrix(0.8, 0.8),
+                matrix=fitz.Matrix(0.65, 0.65),
                 alpha=False,
             )
-            paginas.append((indice + 1, pixmap.tobytes("png")))
+            imagen = pixmap.tobytes("jpg", jpg_quality=76)
+            paginas.append((indice + 1, imagen))
     finally:
         documento.close()
     return paginas
@@ -2274,6 +2539,14 @@ def combinar_datos_detectados(destino, nuevos):
     """Consolida valores encontrados en todas las páginas sin perder evidencia."""
     for campo, valor in (nuevos or {}).items():
         if not valor:
+            continue
+        if campo in {
+            "empresa",
+            "propietario",
+            "direccion_empresa",
+            "direccion_propietario",
+            "nueva_empresa",
+        } and valor_ocr_sospechoso(valor):
             continue
         if campo == "radicado_padre" and not radicado_padre_valido(valor):
             continue
@@ -2783,6 +3056,15 @@ def extraer_datos_pdf(contenido, texto=None):
                 else:
                     dia, mes, anio = partes
                     datos["fecha_solicitud"] = f"{anio}-{mes.zfill(2)}-{dia.zfill(2)}"
+    for campo in (
+        "empresa",
+        "propietario",
+        "direccion_empresa",
+        "direccion_propietario",
+        "nueva_empresa",
+    ):
+        if datos.get(campo) and valor_ocr_sospechoso(datos[campo]):
+            datos.pop(campo, None)
     return datos
 
 
@@ -2940,7 +3222,9 @@ def pagina_pdf_vacia(contenido, numero_pagina):
             if min(muestras[indice:indice + 3]) < 245:
                 pixeles_oscuros += 1
         documento.close()
-        return total_pixeles == 0 or (pixeles_oscuros / total_pixeles) < 0.001
+        return total_pixeles == 0 or (
+            pixeles_oscuros / total_pixeles
+        ) < BLANK_PAGE_DARK_PIXEL_RATIO
     except Exception:
         return False
 
@@ -2956,7 +3240,9 @@ def pagina_pixeles_blancos(pixmap):
         for indice in range(0, len(pixmap.samples), muestras_por_pixel)
         if min(pixmap.samples[indice:indice + 3]) < 245
     )
-    return total_pixeles == 0 or (pixeles_oscuros / max(total_pixeles // 4, 1)) < 0.001
+    return total_pixeles == 0 or (
+        pixeles_oscuros / max(total_pixeles // 4, 1)
+    ) < BLANK_PAGE_DARK_PIXEL_RATIO
 
 
 def extraer_texto_ocr_pixmap(pixmap):
@@ -3327,6 +3613,8 @@ def documentos_faltantes(registro):
         for documento in registro.get("canvas_paginas", [])
         if documento.get("tipo_documento")
     }
+    if registro.get("tipo_caso") == "Con recurso":
+        anexados.add("Recurso")
     faltantes = []
     notificaciones = {
         "Notificación",
@@ -3359,15 +3647,26 @@ def renderizar_checklist_documental(tipo_caso, documentos_presentes):
         normalizar_tipo_documental(documento)
         for documento in (documentos_presentes or [])
     }
+    presentes.discard("")
     faltantes = [
         grupo for grupo in grupos
-        if not any(opcion in presentes for opcion in grupo)
+        if not any(
+            (normalizar_tipo_documental(opcion) or opcion) in presentes
+            for opcion in grupo
+        )
     ]
     st.markdown("#### Checklist documental")
     st.caption(f"Proceso seleccionado: **{tipo_caso}**")
     columnas = st.columns(2)
     for indice, grupo in enumerate(grupos):
-        encontrado = next((opcion for opcion in grupo if opcion in presentes), "")
+        encontrado = next(
+            (
+                opcion
+                for opcion in grupo
+                if (normalizar_tipo_documental(opcion) or opcion) in presentes
+            ),
+            "",
+        )
         etiqueta = " o ".join(grupo)
         texto = f"{'✅' if encontrado else '⬜'} {etiqueta}"
         if grupo in faltantes:
@@ -3901,6 +4200,14 @@ def configurar_tabla_registro_sheet(service, cantidad_columnas):
 
 def guardar_registro_en_sheets(service, registro_datos):
     try:
+        nombre_hoja = obtener_hoja_registro(service, SPREADSHEET_ID)
+        asegurar_dimension_grid(
+            service,
+            SPREADSHEET_ID,
+            nombre_hoja,
+            filas=1000,
+            columnas=max(len(COLUMNAS_SHEET_OFICIALES), 43),
+        )
         existente = buscar_registro_en_sheets(
             service,
             registro_datos.get("radicado_padre"),
@@ -3928,6 +4235,13 @@ def guardar_registro_en_sheets(service, registro_datos):
                     valueInputOption="USER_ENTERED",
                     body={"values": [encabezados]},
                 ).execute()
+                asegurar_dimension_grid(
+                    service,
+                    SPREADSHEET_ID,
+                    nombre_hoja,
+                    filas=1000,
+                    columnas=len(encabezados),
+                )
             fila = fila_registro_para_sheet(encabezados, registro_datos, fila)
             rango = rango_hoja_registro(
                 service,
@@ -3966,6 +4280,13 @@ def guardar_registro_en_sheets(service, registro_datos):
                     valueInputOption="USER_ENTERED",
                     body={"values": [encabezados]},
                 ).execute()
+                asegurar_dimension_grid(
+                    service,
+                    SPREADSHEET_ID,
+                    nombre_hoja,
+                    filas=1000,
+                    columnas=len(encabezados),
+                )
             valores = [fila_registro_para_sheet(encabezados, registro_datos)]
             siguiente_fila = len(filas_actuales) + 1
             rango = rango_hoja_registro(
@@ -4999,6 +5320,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
         textos_analizados = {}
         partes_analizadas_por_archivo = {}
         contenidos_visuales_ia = []
+        paginas_criticas_por_archivo = {}
         fecha_carga = None
         tipo_caso_detectado = ""
         if archivos_canvas:
@@ -5033,11 +5355,28 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     except ValueError:
                         contenido_analizable = b""
                 if archivo.name.lower().endswith(".pdf"):
-                    contenidos_visuales_ia.append((archivo.name, contenido_analizable))
-                    partes_analisis = separar_pdf_completo(contenido_analizable, tipo_documento)
+                    paginas_hibridas, texto_archivo = extraer_paginas_hibridas_pdf(
+                        contenido_analizable,
+                        lambda pagina, total, indice=indice_archivo: barra_analisis.progress(
+                            min(
+                                (indice - 1 + (pagina / max(total, 1)))
+                                / total_archivos,
+                                1.0,
+                            ),
+                            text=(
+                                f"Analizando archivo {indice} de {total_archivos}: "
+                                f"página {pagina} de {total}"
+                            ),
+                        ),
+                    )
+                    partes_analisis = separar_pdf_con_textos(
+                        contenido_analizable,
+                        tipo_documento,
+                        paginas_hibridas,
+                    )
                     clave_contenido = huella_contenido(contenido_analizable)
                     partes_analizadas_por_archivo[clave_contenido] = partes_analisis
-                    if partes_analisis and len(partes_analisis) > 1:
+                    if partes_analisis and len(partes_analisis) > 1 and not texto_archivo:
                         textos_partes = []
                         for parte in partes_analisis:
                             subtexto = normalizar_texto_documento(
@@ -5060,22 +5399,46 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                 textos_partes.append(subtexto)
                         texto_archivo = normalizar_texto_documento(" ".join(textos_partes))
                     else:
-                        texto_archivo = normalizar_texto_documento(
-                            extraer_texto_pdf_con_progreso(
-                                contenido_analizable,
-                                lambda pagina, total, indice=indice_archivo: barra_analisis.progress(
-                                    min(
-                                        (indice - 1 + (pagina / max(total, 1)))
-                                        / total_archivos,
-                                        1.0,
-                                    ),
-                                    text=(
-                                        f"Analizando archivo {indice} de {total_archivos}: "
-                                        f"página {pagina} de {total}"
-                                    ),
+                        paginas_hibridas, texto_archivo = extraer_paginas_hibridas_pdf(
+                            contenido_analizable,
+                            lambda pagina, total, indice=indice_archivo: barra_analisis.progress(
+                                min(
+                                    (indice - 1 + (pagina / max(total, 1)))
+                                    / total_archivos,
+                                    1.0,
+                                ),
+                                text=(
+                                    f"Analizando archivo {indice} de {total_archivos}: "
+                                    f"página {pagina} de {total}"
+                                ),
+                            ),
+                        )
+                        paginas_criticas = [
+                            item["pagina"] for item in paginas_hibridas if item["critica"]
+                        ]
+                        if len(paginas_criticas) > 8:
+                            paginas_priorizadas = sorted(
+                                (
+                                    item for item in paginas_hibridas
+                                    if item["pagina"] in paginas_criticas
+                                ),
+                                key=lambda item: (
+                                    not bool(re.search(
+                                        r"firma|sello|manuscrit",
+                                        item["texto"],
+                                        re.IGNORECASE,
+                                    )),
+                                    len(item["texto"]),
                                 ),
                             )
-                        )
+                            paginas_criticas = [
+                                item["pagina"] for item in paginas_priorizadas[:8]
+                            ]
+                        if paginas_criticas:
+                            paginas_criticas_por_archivo[clave_contenido] = paginas_criticas
+                            contenidos_visuales_ia.append(
+                                (archivo.name, contenido_analizable, paginas_criticas)
+                            )
                 else:
                     texto_archivo = normalizar_texto_documento(
                         extraer_texto_pdf_con_progreso(
@@ -5220,11 +5583,26 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
             texto_ocr_completo = normalizar_texto_documento(
                 " ".join(textos_analizados.values())
             )
+            campos_criticos_faltantes = {
+                campo for campo in (
+                    "radicado_padre",
+                    "placa",
+                    "fecha_solicitud",
+                    "empresa",
+                    "nit",
+                    "propietario",
+                    "cedula",
+                ) if not datos_carga.get(campo)
+            }
+            vision_necesaria = bool(
+                paginas_criticas_por_archivo and campos_criticos_faltantes
+            )
             if (
                 analizar_paginas_local is not None
                 and not st.session_state.get(clave_ia)
                 and not st.session_state.get(f"{clave_intento_ia}_vision")
                 and contenidos_visuales_ia
+                and vision_necesaria
             ):
                 st.session_state[f"{clave_intento_ia}_vision"] = True
                 if buscar_ollama():
@@ -5239,21 +5617,22 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             "paginas_por_seccion": [],
                             "faltantes": [],
                         }
-                        for nombre_pdf, contenido_pdf in contenidos_visuales_ia:
-                            total_paginas = len(
-                                fitz.open(stream=contenido_pdf, filetype="pdf")
-                            ) if fitz is not None else 0
-                            for inicio_pagina in range(1, total_paginas + 1, 4):
-                                paginas = paginas_visuales_para_ia(
-                                    contenido_pdf,
-                                    inicio=inicio_pagina,
-                                    maximo=4,
-                                )
+                        for nombre_pdf, contenido_pdf, paginas_criticas in contenidos_visuales_ia:
+                            for inicio in range(0, len(paginas_criticas), 2):
+                                paginas = [
+                                    pagina
+                                    for numero in paginas_criticas[inicio:inicio + 2]
+                                    for pagina in paginas_visuales_para_ia(
+                                        contenido_pdf,
+                                        inicio=numero,
+                                        maximo=1,
+                                    )
+                                ]
                                 if not paginas:
                                     continue
                                 with st.spinner(
                                     f"Ollama Vision analiza {nombre_pdf}: "
-                                    f"páginas {inicio_pagina}-{min(inicio_pagina + 3, total_paginas)}..."
+                                    f"páginas {paginas_criticas[inicio]}..."
                                 ):
                                     lote = analizar_paginas_local(
                                         paginas,
@@ -5274,7 +5653,8 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         st.session_state[clave_ia] = resultado_visual
                         st.success(
                             "Ollama Vision analizó las páginas con evidencia visual. "
-                            "Revisa los campos y el checklist antes de guardar."
+                            "Revisa los campos y el checklist antes de guardar. "
+                            "Se usó únicamente porque el OCR no produjo texto suficiente."
                         )
                     except (ConnectionError, TimeoutError, ValueError) as error:
                         st.warning(
@@ -5284,13 +5664,14 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 else:
                     st.info(
                         f"El modelo visual `{OLLAMA_VISION_MODEL}` no está instalado. "
-                        "La carga continuará con OCR y análisis textual hasta completar "
-                        "la descarga del modelo visual."
+                        "La carga continuará con OCR y análisis textual."
                     )
             if (
                 analizar_expediente_local is not None
                 and analisis_a_markdown is not None
                 and texto_ocr_completo
+                and len(texto_ocr_completo) <= 12000
+                and campos_criticos_faltantes
                 and not st.session_state.get(clave_ia)
                 and not st.session_state.get(clave_intento_ia)
             ):
@@ -5311,7 +5692,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             st.session_state[clave_ia] = resultado_ia
                             combinar_campos_ia(datos_carga, resultado_ia)
                             st.success(
-                                "Ollama completó automáticamente los campos disponibles. "
+                                "Ollama revisó únicamente el texto corto con campos faltantes. "
                                 "Revisa la evidencia antes de guardar."
                             )
                         except (ConnectionError, TimeoutError, ValueError) as error:
@@ -5322,12 +5703,12 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     else:
                         st.warning(
                             f"Ollama está activo, pero el modelo `{OLLAMA_REQUIRED_MODEL}` "
-                            "no está descargado. Se usará el OCR y el respaldo por regex."
+                            "no está descargado. Se usará el OCR y las reglas locales."
                         )
                 else:
                     st.warning(
                         "Ollama no está disponible en localhost. Se usará el OCR y el "
-                        "respaldo por expresiones regulares."
+                        "las reglas locales."
                     )
             resultado_ia_automatico = st.session_state.get(clave_ia)
             if resultado_ia_automatico:
@@ -5402,7 +5783,14 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         "Partes documentales subidas a Drive para continuar el análisis. "
                         "El PDF unificado se generará al completar el registro."
                     )
-            elif not drive_service:
+            staged_actual = carga_staging.get(carga_id) or {}
+            for documento_staged in staged_actual.get("documentos", []):
+                tipo_staged = normalizar_tipo_documental(
+                    documento_staged.get("tipo_documento", "")
+                )
+                if tipo_staged:
+                    tipos_documentales_carga.add(tipo_staged)
+            if not drive_service:
                 st.warning(
                     "Drive no está autenticado: la carga se conserva localmente y "
                     "no se puede crear la estructura documental remota."
@@ -5420,9 +5808,12 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 "Detección automática",
             )
             if tipo_checklist in DOCUMENTOS_BASE_POR_CASO:
+                documentos_checklist = set(tipos_documentales_carga)
+                if tipo_checklist == "Con recurso":
+                    documentos_checklist.add("Recurso")
                 renderizar_checklist_documental(
                     tipo_checklist,
-                    sorted(tipos_documentales_carga),
+                    sorted(documentos_checklist),
                 )
             campos_detectados = sorted(
                 campo.replace("_", " ").capitalize()
@@ -5997,15 +6388,15 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             )
                             staged_folder_id = carpeta_definitiva_id
                         else:
-                            carpeta_anual_id = carpeta_drive_para_fecha(
+                            carpeta_peticiones_id = carpeta_drive_para_fecha(
                                 drive_service,
                                 str(fecha_registro_previa),
                             )
-                            if carpeta_anual_id:
+                            if carpeta_peticiones_id:
                                 mover_carpeta_drive(
                                     drive_service,
                                     staged_folder_id,
-                                    carpeta_anual_id,
+                                    carpeta_peticiones_id,
                                 )
                         carpeta_expediente_drive_id = staged_folder_id
                     elif staged_folder_id:
@@ -6036,6 +6427,12 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 staged_documentos = [
                     documento.copy()
                     for documento in staged_carga.get("documentos", [])
+                    if not documento.get("es_pdf_completo")
+                ]
+                staged_pdf_completos = [
+                    documento
+                    for documento in staged_carga.get("documentos", [])
+                    if documento.get("es_pdf_completo")
                 ]
                 if drive_service and carpeta_expediente_drive_id:
                     for documento in staged_documentos:
@@ -6068,6 +6465,12 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                         documento["drive_id"] = coincidencias[0].get("id")
                                         documento["drive_url"] = coincidencias[0].get("webViewLink")
                                         documento["drive_folder_id"] = carpeta_tipo
+                    for documento in staged_pdf_completos:
+                        mover_archivo_drive(
+                            drive_service,
+                            documento.get("drive_id"),
+                            carpeta_expediente_drive_id,
+                        )
                 canvas_list.extend(staged_documentos)
                 if archivos_canvas and orden_archivos:
                     indices = [
@@ -6334,10 +6737,6 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                 radicado_padre,
                                 matricula_qx,
                                 str(fecha_registro_previa),
-                                tipo_caso_detectado or tipo_caso,
-                                caja,
-                                folder,
-                                total_expedientes,
                             )
                             id_unificado, url_unificado = (None, None)
                             huella_unificado = huella_contenido(pdf_unificado)
@@ -6375,6 +6774,13 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                         eliminar_archivo_drive(
                                             drive_service,
                                             anterior_unificado["drive_id"],
+                                        )
+                                for documento_temporal in staged_pdf_completos:
+                                    temporal_id = documento_temporal.get("drive_id")
+                                    if temporal_id and temporal_id != id_unificado:
+                                        eliminar_archivo_drive(
+                                            drive_service,
+                                            temporal_id,
                                         )
                             canvas_list = [
                                 documento for documento in canvas_list

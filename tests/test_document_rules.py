@@ -1,5 +1,7 @@
 import unittest
 
+from app_6 import extraer_datos_pdf
+
 from document_rules import (
     clasificar_tipo_caso,
     clasificar_tipo_documento,
@@ -11,6 +13,17 @@ from document_rules import (
 
 
 class TestDocumentRules(unittest.TestCase):
+    def test_extraer_datos_descarta_etiqueta_ocr_contaminada(self):
+        datos = extraer_datos_pdf(
+            b"",
+            texto=(
+                "PLACA GVS914 NIT 8050135165 "
+                "PROPIETARIO s (1) Identificacion Doc Nombres Emp/Pan % Moroso 94379462"
+            ),
+        )
+        self.assertEqual(datos["placa"], "GVS914")
+        self.assertNotIn("propietario", datos)
+
     def test_clasifica_desistimiento(self):
         texto = "El interesado presenta desistimiento y no continúa con la solicitud."
         self.assertEqual(clasificar_tipo_caso(texto), "Desistimiento")

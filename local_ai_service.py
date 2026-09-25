@@ -21,11 +21,13 @@ OLLAMA_MODEL = os.environ.get("SISTEMA_OLLAMA_MODEL", "qwen2.5vl:3b")
 OLLAMA_TEXT_MODEL = os.environ.get("SISTEMA_OLLAMA_TEXT_MODEL", "qwen2.5:7b")
 OLLAMA_VISION_MODEL = os.environ.get("SISTEMA_OLLAMA_VISION_MODEL", OLLAMA_MODEL)
 OLLAMA_TIMEOUT = int(os.environ.get("SISTEMA_OLLAMA_TIMEOUT", "600"))
+OLLAMA_TEXT_TIMEOUT = int(os.environ.get("SISTEMA_OLLAMA_TEXT_TIMEOUT", "180"))
 OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
 
 DEFAULT_OLLAMA_OPTIONS = {
     "temperature": 0.1,
-    "num_predict": 1536,
+    "num_predict": 1024,
+    "num_ctx": 8192,
     "repeat_penalty": 1.05,
     "seed": 42,
 }
@@ -165,6 +167,34 @@ def analizar_expediente_local(texto: str, *, modelo: str | None = None) -> dict[
     contenido = str(texto or "").strip()
     if not contenido:
         raise ValueError("No hay texto OCR suficiente para analizar.")
+    if len(contenido) > 12000:
+        resultados = []
+        for inicio in range(0, len(contenido), 12000):
+            try:
+                resultados.append(
+                    analizar_expediente_local(
+                        contenido[inicio:inicio + 12000],
+                        modelo=modelo,
+                    )
+                )
+            except (ConnectionError, TimeoutError):
+                break
+        consolidado = {}
+        for resultado in resultados:
+            for clave, valor in resultado.items():
+                if isinstance(valor, list):
+                    acumulado = consolidado.setdefault(clave, [])
+                    for elemento in valor:
+                        if elemento not in acumulado:
+                            acumulado.append(elemento)
+                elif valor not in (None, "") and consolidado.get(clave) in (None, ""):
+                    consolidado[clave] = valor
+        if not consolidado.get("faltantes"):
+            consolidado["faltantes"] = []
+        consolidado["faltantes"].append(
+            "Análisis textual incompleto: algunos bloques superaron el tiempo disponible."
+        ) if len(resultados) * 12000 < len(contenido) else None
+        return consolidado
     if not ollama_disponible():
         raise ConnectionError(
             "Ollama no está disponible en localhost. Instala Ollama y descarga "
@@ -199,9 +229,15 @@ def analizar_expediente_local(texto: str, *, modelo: str | None = None) -> dict[
                 "format": "json",
                 "options": DEFAULT_OLLAMA_OPTIONS.copy(),
             },
-            timeout=OLLAMA_TIMEOUT,
+            timeout=OLLAMA_TEXT_TIMEOUT,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as error:
+            detalle = response.text[:500].strip()
+            raise ConnectionError(
+                f"Ollama rechazó el análisis ({response.status_code}): {detalle}"
+            ) from error
         payload = response.json()
         return _validar_resultado_ia(
             _extraer_json(payload.get("message", {}).get("content", ""))
@@ -259,18 +295,32 @@ def analizar_paginas_local(
         },
     ]
     try:
+        payload_base = {
+            "model": modelo_vision,
+            "messages": mensajes,
+            "stream": False,
+            "options": DEFAULT_OLLAMA_OPTIONS.copy(),
+        }
         response = requests.post(
             f"{OLLAMA_URL}/api/chat",
-            json={
-                "model": modelo_vision,
-                "messages": mensajes,
-                "stream": False,
-                "format": "json",
-                "options": DEFAULT_OLLAMA_OPTIONS.copy(),
-            },
+            json={**payload_base, "format": "json"},
             timeout=OLLAMA_TIMEOUT,
         )
-        response.raise_for_status()
+        status_code = getattr(response, "status_code", 200)
+        if status_code == 400:
+            response = requests.post(
+                f"{OLLAMA_URL}/api/chat",
+                json=payload_base,
+                timeout=OLLAMA_TIMEOUT,
+            )
+            status_code = getattr(response, "status_code", 200)
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as error:
+            detalle = getattr(response, "text", "")[:500].strip()
+            raise ConnectionError(
+                f"Ollama rechazó el análisis visual ({status_code}): {detalle}"
+            ) from error
         payload = response.json()
         return _validar_resultado_ia(
             _extraer_json(payload.get("message", {}).get("content", ""))

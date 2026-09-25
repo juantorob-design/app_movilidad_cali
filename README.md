@@ -42,10 +42,11 @@ y remisión a registro. Los documentos que no pertenecen al flujo quedan al
 final como `Otro`.
 
 Los complementos temporales usan la convención
-`NRO_PETICION_PLACA_DD_MM_AAAA_CAJA_FOLDER_CARPETA_RECURSO.pdf`. Al confirmar
-el registro se trasladan desde `Peticion/RADICADO_PLACA_DD_MM_AAAA` a
-`PDFS Escaneados/AÑO/RADICADO_PLACA_DD_MM_AAAA`, manteniendo sus subcarpetas
-por tipo documental.
+`NRO_PETICION_PLACA_DD_MM_AAAA_CAJA_FOLDER_CARPETA_RECURSO.pdf`. Durante la
+carga y revisión se conservan en `PDFS Escaneados/Peticion`. Al confirmar el
+registro, la carpeta se traslada a
+`PDFS Escaneados/AÑO/RADICADO_PLACA_AAAA-MM-DD_UBICACION`, manteniendo sus
+subcarpetas por tipo documental.
 En la consulta del expediente se puede elegir entre el PDF completo unificado
 y un explorador individual de complementos.
 
