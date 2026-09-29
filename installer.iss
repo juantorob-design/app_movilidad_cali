@@ -1,5 +1,5 @@
 #define MyAppName "Secretaría de Tránsito y Transporte - Desvinculaciones"
-#define MyAppVersion "1.1.27"
+#define MyAppVersion "1.1.28"
 #define MyAppPublisher "Secretaría de Tránsito y Transporte"
 #define MyAppExeName "SistemaDesvinculaciones.exe"
 #if FileExists("OllamaSetup.exe")
@@ -40,10 +40,6 @@ Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 #ifdef HasOllamaInstaller
 Source: "OllamaSetup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 #endif
-#ifdef HasPdfEditor
-Source: "dist_pdf_editor\EditorPDFLocal\*"; DestDir: "{app}\EditorPDFLocal"; Flags: ignoreversion recursesubdirs createallsubdirs
-#endif
-
 [Run]
 #ifdef HasOllamaInstaller
 Filename: "{tmp}\OllamaSetup.exe"; Parameters: "/silent"; Flags: runhidden waituntilterminated; Check: ShouldInstallOllama

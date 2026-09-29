@@ -41,14 +41,19 @@ citaciones, notificaciones, recurso y sus actuaciones, constancia de ejecutoria
 y remisión a registro. Los documentos que no pertenecen al flujo quedan al
 final como `Otro`.
 
-Los complementos temporales usan la convención
-`NRO_PETICION_PLACA_DD_MM_AAAA_CAJA_FOLDER_CARPETA_RECURSO.pdf`. Durante la
-carga y revisión se conservan en `PDFS Escaneados/Peticion`. Al confirmar el
-registro, la carpeta se traslada a
+Los complementos usan el nombre base `RADICADO_PLACA_AAAA-MM-DD` seguido del
+tipo documental, por ejemplo
+`RADICADO_PLACA_AAAA-MM-DD_Resolución-del-recurso.pdf`; los bloques repetidos
+del mismo tipo se enumeran (`_02`, `_03`, etc.). Durante la carga y revisión se
+conservan en `PDFS Escaneados/Pendientes`: el PDF original completo queda en
+la raíz de la carpeta temporal y cada complemento se guarda como fragmento en
+su subcarpeta documental. Las páginas en blanco se excluyen de los fragmentos,
+y las páginas de continuación se mantienen con el bloque anterior. El
+checklist confirma los documentos que realmente encuentra en esas carpetas,
+no solo los tipos sugeridos por OCR. En la consulta se pueden ver y descargar
+los complementos por separado. Al confirmar el registro, la carpeta se traslada a
 `PDFS Escaneados/AÑO/RADICADO_PLACA_AAAA-MM-DD_UBICACION`, manteniendo sus
 subcarpetas por tipo documental.
-En la consulta del expediente se puede elegir entre el PDF completo unificado
-y un explorador individual de complementos.
 
 Los anexos pueden llegar sin fecha de petición. Si el expediente todavía no
 existe, se conservan en la carpeta temporal de la petición y se pueden

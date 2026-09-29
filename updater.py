@@ -7,10 +7,73 @@ import subprocess
 import threading
 import tempfile
 import time
-from urllib.parse import urlparse
+from html.parser import HTMLParser
+from urllib.parse import urlencode, urljoin, urlparse
 
 # Versión actual de la aplicación instalada
-CURRENT_VERSION = "1.1.27"
+CURRENT_VERSION = "1.1.28"
+
+DOWNLOAD_HOSTS = {
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    "drive.google.com",
+    "drive.usercontent.google.com",
+}
+
+
+class _DriveConfirmationParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.forms = []
+        self._current_form = None
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        if tag == "form":
+            self._current_form = {
+                "action": attributes.get("action", ""),
+                "fields": {},
+            }
+        elif tag == "input" and self._current_form is not None:
+            name = attributes.get("name")
+            if name:
+                self._current_form["fields"][name] = attributes.get("value", "")
+
+    def handle_endtag(self, tag):
+        if tag == "form" and self._current_form is not None:
+            self.forms.append(self._current_form)
+            self._current_form = None
+
+
+def _ocultar_consola_kwargs():
+    """Evita ventanas de consola para consultas auxiliares en Windows."""
+    if os.name != "nt":
+        return {}
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+
+
+def _drive_confirmation_url(response):
+    """Resuelve el formulario de confirmación que Google muestra para archivos grandes."""
+    if not response.headers.get("Content-Type", "").lower().startswith("text/html"):
+        return ""
+    if urlparse(response.url).hostname not in {
+        "drive.google.com",
+        "drive.usercontent.google.com",
+    }:
+        return ""
+    parser = _DriveConfirmationParser()
+    parser.feed(response.text)
+    for form in parser.forms:
+        action = urljoin(response.url, form["action"])
+        if (
+            urlparse(action).scheme == "https"
+            and urlparse(action).hostname == "drive.usercontent.google.com"
+            and {"id", "export", "confirm"}.issubset(form["fields"])
+        ):
+            return f"{action}?{urlencode(form['fields'])}"
+    return ""
+
 
 # GitHub Raw será la fuente pública de versiones cuando el repositorio se publique.
 DEFAULT_VERSION_CHECK_URL = (
@@ -179,6 +242,7 @@ def buscar_desinstalador_instalado():
             text=True,
             timeout=20,
             check=False,
+            **_ocultar_consola_kwargs(),
         )
         if resultado.returncode != 0:
             return ""
@@ -200,9 +264,9 @@ def download_and_apply_update(download_url):
     parsed_url = urlparse(download_url)
     if (
         parsed_url.scheme != "https"
-        or parsed_url.netloc.lower() not in {"github.com", "objects.githubusercontent.com"}
+        or parsed_url.hostname not in DOWNLOAD_HOSTS
     ):
-        raise ValueError("La URL de actualización no pertenece a GitHub.")
+        raise ValueError("El dominio de la URL de actualización no está autorizado.")
 
     carpeta_temporal = os.path.abspath(tempfile.gettempdir())
     instalador = os.path.join(
@@ -216,8 +280,19 @@ def download_and_apply_update(download_url):
     ejecutable = obtener_ruta_ejecutable()
 
     try:
-        response = requests.get(download_url, stream=True, timeout=60)
+        session = requests.Session()
+        response = session.get(download_url, stream=True, timeout=60)
+        confirmacion = _drive_confirmation_url(response)
+        if confirmacion:
+            response.close()
+            response = session.get(confirmacion, stream=True, timeout=60)
         response.raise_for_status()
+        if urlparse(response.url).hostname not in DOWNLOAD_HOSTS:
+            raise ValueError("La descarga redirigió a un dominio no autorizado.")
+        if response.headers.get("Content-Type", "").lower().startswith("text/html"):
+            raise OSError(
+                "El proveedor devolvió una página de confirmación en vez del instalador."
+            )
         tamano_descargado = 0
         with open(instalador, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
@@ -286,7 +361,7 @@ Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
         # os._exit evita que Streamlit mantenga módulos o archivos abiertos.
         os._exit(0)
 
-    except (OSError, requests.RequestException):
+    except (OSError, requests.RequestException, ValueError):
         for ruta in (instalador, script_actualizacion):
             try:
                 if os.path.exists(ruta):

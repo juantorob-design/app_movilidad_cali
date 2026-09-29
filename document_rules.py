@@ -132,6 +132,20 @@ def clasificar_tipo_caso(texto="", nombre=""):
     evidencia = normalizar_errores_ocr(f"{nombre} {texto}").lower()
     if re.search(r"desistim|desestimiento|desistimiento|desiste", evidencia):
         return "Desistimiento"
+    evidencia_recurso_positiva = re.sub(
+        r"\b(?:sin\s+(?:interponer\s+)?recurso|"
+        r"no\s+(?:se\s+)?(?:interpuso|present[oó]|interpone|presenta)"
+        r"\s+(?:el\s+|un\s+)?recurso)\b",
+        "",
+        evidencia,
+    )
+    if re.search(
+        r"\bcon\s+recurso\b|\brecurso\s+de\s+reposici[oó]n\b|"
+        r"\bpresent[oó]\s+(?:un\s+)?recurso\b|\binterpuso\s+(?:un\s+)?recurso\b|"
+        r"\bse\s+resuelve\s+el\s+recurso\b|\bresoluci[oó]n\s+del\s+recurso\b",
+        evidencia_recurso_positiva,
+    ):
+        return "Con recurso"
     if re.search(
         r"\bsin\s+recurso\b|no\s+interpuso\s+(?:un\s+)?recurso\b|"
         r"no\s+se\s+interpuso\s+(?:un\s+)?recurso\b|"
@@ -142,13 +156,6 @@ def clasificar_tipo_caso(texto="", nombre=""):
         evidencia,
     ):
         return "Sin recurso"
-    if re.search(
-        r"\bcon\s+recurso\b|\brecurso\s+de\s+reposici[oó]n\b|"
-        r"\bpresent[oó]\s+(?:un\s+)?recurso\b|\binterpuso\s+(?:un\s+)?recurso\b|"
-        r"\bse\s+resuelve\s+el\s+recurso\b|\bresoluci[oó]n\s+del\s+recurso\b",
-        evidencia,
-    ):
-        return "Con recurso"
     return None
 
 
@@ -196,6 +203,15 @@ def clasificar_tipo_documento(texto, tipo_fallback):
     evidencia = normalizar_errores_ocr(texto).lower()
     if re.search(r"\bdesistim\w*\b|\bdeclara(?:r)?\s+el\s+desistimiento\b", evidencia):
         return "Desistimiento"
+    encabezado = evidencia[:220]
+    if re.search(
+        r"\bcontrato\s+de\s+vinculaci[oó]n\b|"
+        r"\bcl[aá]usulas?\b|"
+        r"\btarjeta\s+de\s+operaci[oó]n\b|"
+        r"\blicencia\s+de\s+tr[aá]nsito\b",
+        encabezado,
+    ):
+        return "Otro"
     puntuaciones = {
         "Desistimiento": [
             (9, r"\bdesistimiento\b|declara(?:r)?\s+el\s+desistimiento"),
@@ -204,13 +220,22 @@ def clasificar_tipo_documento(texto, tipo_fallback):
         "Resolución del recurso": [(14, r"resoluci[oó]n\s+del\s+recurso|resolucion\s+del\s+recurso|recurso\s+resuelto")],
         "Citación del recurso": [(14, r"citaci[oó]n\s+del\s+recurso|citacion\s+del\s+recurso")],
         "Notificación del recurso": [(14, r"notificaci[oó]n\s+(?:del|de la)\s+recurso|notificacion\s+(?:del|de la)\s+recurso")],
-        "Resolución": [(10, r"\bresoluci[oó]n\b|\bresolucion\b\s*(?:no|n[°ºo])?\s*[:#\-.]?\s*\w+"), (9, r"\bpor\s+la\s+cual\b.*\bdesvincul"), (3, r"\bresoluci[oó]n\b|\bresolucion\b|acto\s+administrativo|resuelve")],
+        "Resolución": [
+            (12, r"\bresoluci[oó]n\s+(?:n(?:ro|o|°|º)?\.?\s*)?\d[\w./-]*"),
+            (9, r"\bresoluci[oó]n\b.{0,100}\b(?:resuelve|fallo|decide|ordena|desvincul)"),
+            (10, r"\bpor\s+la\s+cual\b.{0,120}\b(?:resuelve|ordena|decide)\b"),
+            (10, r"\bresuelve\s*[:.-]"),
+            (8, r"\bacto\s+administrativo\b.{0,80}\b(?:desvincul|resuelve|decide)\b"),
+        ],
         "Requerimiento": [(8, r"\brequerimient[oó]\b|\brequerimiento\b|requerido\s+para|requerir")],
         "Notificación personal": [(12, r"notificaci[oó]n\s+personal|notificacion\s+personal|personalmente\s+notificado")],
         "Notificación por aviso": [(10, r"notificaci[oó]n\s+por\s+aviso|notificacion\s+por\s+aviso|aviso\s+de\s+notificaci")],
         "Notificación por publicación web": [(10, r"notificaci[oó]n\s+por\s+publicaci[oó]n\s+web|notificacion\s+por\s+publicacion\s+web|publicaci[oó]n\s+web")],
         "Oficio de citación": [(8, r"oficio\s+de\s+citaci[oó]n|citacion\s+de\s+la\s+empresa|citacion\s+al\s+propietario|oficio\s+de\s+citado")],
-        "Constancia de ejecutoria": [(10, r"constancia\s+de\s+ejecutoria"), (7, r"\bejecutoria\b|\bfirmeza\b|\bconstancia\b")],
+        "Constancia de ejecutoria": [
+            (10, r"constancia\s+(?:de\s+)?(?:ejecutoria|firmeza)"),
+            (8, r"\bejecutoria\b|\bfirmeza\b"),
+        ],
         "Remisión a registro": [(12, r"remisi[oó]n\s+(?:a|al)\s+registro|remision\s+(?:a|al)\s+registro"), (8, r"registro\s+automotor|remitir\s+al\s+registro")],
         "Recurso": [(10, r"recurso\s+de\s+(?:reposici[oó]n|apelaci[oó]n)"), (8, r"interpuso\s+(?:un\s+)?recurso|present[oó]\s+(?:un\s+)?recurso"), (3, r"\brecurso\b|impugn")],
         "Consulta QX": [(12, r"consulta\s+de\s+verificaci[oó]n\s+de\s+propiedad|consulta\s+de\s+propiedad|verificaci[oó]n\s+de\s+propiedad|consulta\s+qx|verificaci[oó]n\s+qx")],
@@ -226,7 +251,7 @@ def clasificar_tipo_documento(texto, tipo_fallback):
         if puntaje > mejor_puntaje:
             mejor_tipo = tipo
             mejor_puntaje = puntaje
-    return mejor_tipo or tipo_fallback
+    return mejor_tipo if mejor_puntaje >= 5 else tipo_fallback
 
 
 def tipos_documentales_detectados(texto, tipo_fallback):

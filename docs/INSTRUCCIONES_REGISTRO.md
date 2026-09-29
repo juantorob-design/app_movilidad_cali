@@ -17,7 +17,8 @@
    - Constancia de ejecutoria.
    - Remisión a registro.
 3. La separación documental debe guardar cada bloque en su carpeta correcta dentro
-   del expediente y nunca mezclar páginas de diferentes tipos en una sola carpeta.
+   del expediente. Las páginas de tipos distintos no se mezclan en un mismo PDF;
+   las de una misma familia permanecen juntas.
 4. La clasificación del caso debe reconocer exactamente uno de estos estados:
    `Con recurso`, `Sin recurso` o `Desistimiento`.
 5. Una resolución que diga que se declara el desistimiento se clasifica como
@@ -35,6 +36,15 @@
    menciones secundarias. Las páginas de continuación heredan el complemento
    anterior cuando no contienen texto suficiente, evitando enviarlas
    innecesariamente a `Otro`.
+9. Las páginas en blanco se excluyen de los complementos separados. El PDF
+   completo se conserva en la raíz del expediente y cada fragmento se guarda
+   como PDF individual en la subcarpeta de su tipo.
+10. El nombre de cada complemento conserva la base
+    `RADICADO_PLACA_AAAA-MM-DD` y termina con el tipo documental; si hay más de
+    un bloque del mismo tipo, se enumera (`_02`, `_03`, etc.).
+11. El checklist de la carga se confirma consultando los archivos existentes en
+    las subcarpetas de Drive. La clasificación OCR por sí sola no marca un
+    documento como presente.
 
 ## Flujo administrativo obligatorio
 
@@ -133,10 +143,19 @@ La estructura esperada es:
 
 ```text
 PDFS Escaneados/
-  Peticion/
+  Pendientes/
     Por_vincular/
       PLACA/
     RADICADO_PADRE_PLACA_FECHA_UBICACION/  (staging antes de guardar)
+      RADICADO_PADRE_PLACA_FECHA_COMPLETO.pdf
+      peticion/
+      consulta/
+      resolucion resuelve/
+      citacion/
+      notificacion/
+      recurso/
+      constancia de ejecutoria/
+      remision/
   AÑO/
     RADICADO_PADRE_PLACA_FECHA_UBICACION/
       Solicitud/
@@ -173,23 +192,24 @@ existir un PDF completo en la raíz del expediente. Al agregar complementos:
 9. Al terminar el análisis de una carga, las partes detectadas se suben
    inmediatamente a la carpeta del expediente en Drive. Si todavía no se conoce
    la fecha de la petición, se conservan en
-   `PDFS Escaneados/Peticion/Por_vincular/PLACA`.
+   `PDFS Escaneados/Pendientes/Por_vincular/PLACA`.
 10. El guardado reutiliza las partes ya subidas, mueve la carpeta desde
-    `PDFS Escaneados/Peticion` a `PDFS Escaneados/AÑO`, reconstruye el PDF
+    `PDFS Escaneados/Pendientes` a `PDFS Escaneados/AÑO`, reconstruye el PDF
     completo sin hojas blancas y sustituye la versión unificada anterior.
 11. La hoja `BD_DESV` conserva una ubicación digital por registro mediante
     `ACCESO DIGITAL`, `DRIVE FOLDER`, `DOCUMENTOS DRIVE` y `PDF UNIFICADO`.
     La aplicación solo muestra enlaces directos y habilita descargas a usuarios
     con rol autorizado o permiso de descarga explícito.
-12. Los expedientes completos confirmados pueden contener todos los
-    complementos aunque la clasificación automática agrupe páginas en un bloque.
-    La separación por tipo documental debe conservar el PDF completo y no
-    descartar páginas.
+12. El PDF completo se conserva aunque una página no pueda clasificarse; esa
+    página no debe desaparecer. Los documentos sin evidencia suficiente quedan
+    en `Otro` y no reemplazan un documento principal.
 
 Los archivos sin expediente principal se guardan en
-`PDFS Escaneados/Peticion/Por_vincular/PLACA` hasta que el expediente tenga
+`PDFS Escaneados/Pendientes/Por_vincular/PLACA` hasta que el expediente tenga
 radicado y fecha; después se trasladan a la carpeta anual del expediente y a
 su subcarpeta documental correspondiente.
+En la consulta, los complementos se pueden abrir y descargar individualmente,
+separados del PDF completo.
 
 ## Navegación externa
 

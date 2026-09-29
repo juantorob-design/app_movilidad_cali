@@ -242,6 +242,9 @@ def abrir_editor_pdf():
     subprocess.Popen(
         [ruta],
         cwd=os.path.dirname(ruta),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
 
@@ -364,9 +367,9 @@ SUPABASE_OAUTH_REDIRECT = os.environ.get(
 ).strip()
 DRIVE_FOLDER_ID = os.environ.get(
     "SISTEMA_DRIVE_FOLDER_ID",
-    "1wA5LrPmk5vcgG3YP2LgROeNvcupJK2Gs",
+    "1vwsw0RKXsoYYqXwhH2OZPaD-BrTiUUyl",
 ).strip()
-DRIVE_REQUEST_FOLDER_NAME = "Peticion"
+DRIVE_REQUEST_FOLDER_NAME = "Pendientes"
 DRIVE_UNLINKED_FOLDER_NAME = "Por_vincular"
 SUBCARPETAS_DOCUMENTALES = (
     "peticion",
@@ -1522,16 +1525,48 @@ def buscar_carpeta_drive_por_nombres(service, parent_id, nombres):
 
 
 def carpeta_primaria_documentos_drive(service):
-    """Devuelve la raíz documental real: preferiblemente 'PDFS Escaneados' bajo la base configurada."""
+    """Devuelve la carpeta PDFS Escaneados configurada como raíz documental."""
     if not service or not DRIVE_FOLDER_ID:
         return None
     try:
-        metadata = service.files().get(fileId=DRIVE_FOLDER_ID, fields="id,name").execute()
+        metadata = service.files().get(
+            fileId=DRIVE_FOLDER_ID,
+            fields="id,name,mimeType,parents",
+        ).execute()
         nombre_base = str(metadata.get("name", "")).strip().casefold()
         if nombre_base == "pdfs escaneados":
+            for parent_id in metadata.get("parents", []):
+                parent = service.files().get(
+                    fileId=parent_id,
+                    fields="id,name,mimeType,parents",
+                ).execute()
+                nombre_parent = str(parent.get("name", "")).strip().casefold()
+                if nombre_parent in {"pendientes", "pendiente", "peticion", "peticiones"}:
+                    for grandparent_id in parent.get("parents", []):
+                        grandparent = service.files().get(
+                            fileId=grandparent_id,
+                            fields="id,name,mimeType",
+                        ).execute()
+                        if (
+                            str(grandparent.get("name", "")).strip().casefold()
+                            == "pdfs escaneados"
+                        ):
+                            return grandparent_id
             return DRIVE_FOLDER_ID
-    except Exception:
-        pass
+        if nombre_base in {"pendientes", "pendiente", "peticion", "peticiones"}:
+            for parent_id in metadata.get("parents", []):
+                parent = service.files().get(
+                    fileId=parent_id,
+                    fields="id,name,mimeType",
+                ).execute()
+                if str(parent.get("name", "")).strip().casefold() == "pdfs escaneados":
+                    return parent_id
+    except Exception as error:
+        st.error(
+            "No fue posible validar la carpeta raíz configurada de Drive "
+            f"({DRIVE_FOLDER_ID}): {error}"
+        )
+        return None
 
     carpeta_documental = buscar_carpeta_drive_por_nombres(
         service,
@@ -1540,13 +1575,16 @@ def carpeta_primaria_documentos_drive(service):
     )
     if carpeta_documental:
         return carpeta_documental
-
-    creada = buscar_o_crear_carpeta_drive(service, DRIVE_FOLDER_ID, "PDFS Escaneados")
-    return creada or DRIVE_FOLDER_ID
+    st.error(
+        "La carpeta configurada de Drive no es 'PDFS Escaneados' ni contiene "
+        "esa carpeta. Se canceló la operación para evitar crear una segunda "
+        "estructura documental."
+    )
+    return None
 
 
 def carpeta_drive_para_peticiones(service):
-    """Obtiene PDFS Escaneados/Peticion, raíz única de expedientes y pendientes."""
+    """Obtiene PDFS Escaneados/Pendientes para las cargas no confirmadas."""
     base_id = carpeta_primaria_documentos_drive(service)
     if not base_id:
         return None
@@ -1554,7 +1592,7 @@ def carpeta_drive_para_peticiones(service):
         buscar_carpeta_drive_por_nombres(
             service,
             base_id,
-            ("Peticion", "Peticiones"),
+            ("Pendientes", "Pendiente"),
         )
         or buscar_o_crear_carpeta_drive(
             service,
@@ -1657,8 +1695,20 @@ def nombre_raiz_expediente(radicado, placa, fecha):
     )
 
 
+def tipo_documento_de_parte(texto, tipo_origen):
+    """Conserva la clasificación del separador; el OCR local solo completa tipos genéricos."""
+    tipo_origen = str(tipo_origen or "").strip()
+    if tipo_origen and tipo_origen not in {
+        "Otro",
+        "Complemento",
+        "Expediente completo",
+    }:
+        return tipo_origen
+    return clasificar_tipo_documento(texto, tipo_origen or "Otro")
+
+
 def carpeta_drive_para_staging(service, radicado, placa, fecha):
-    """Obtiene PDFs Escaneados/Peticion/RADICADO_PLACA_FECHA para el staging temporal."""
+    """Obtiene PDFs Escaneados/Pendientes/RADICADO_PLACA_FECHA para staging."""
     peticiones_id = carpeta_drive_para_peticiones(service)
     if not peticiones_id:
         return None
@@ -1670,7 +1720,7 @@ def carpeta_drive_para_staging(service, radicado, placa, fecha):
 
 
 def carpeta_drive_para_complementos_sin_vincular(service, placa):
-    """Obtiene PDFs Escaneados/Peticion/Por_vincular/PLACA para anexos sin expediente padre."""
+    """Obtiene PDFs Escaneados/Pendientes/Por_vincular/PLACA para anexos sin expediente padre."""
     peticiones_id = carpeta_drive_para_peticiones(service)
     if not peticiones_id:
         return None
@@ -1735,7 +1785,7 @@ def fusionar_complementos_sin_vincular(service, placa, carpeta_expediente_id):
     return movidos
 
 def buscar_carpeta_expediente_drive(service, fecha, radicado, placa):
-    """Busca un expediente pendiente en Peticion o confirmado dentro del año."""
+    """Busca un expediente pendiente o confirmado dentro de su carpeta anual."""
     if not service:
         return None
     base_id = carpeta_primaria_documentos_drive(service)
@@ -1791,21 +1841,28 @@ def carpeta_drive_para_documento(service, carpeta_expediente_id, tipo_documento)
     equivalencias = {
         "solicitud": "peticion",
         "petición": "peticion",
+        "peticion": "peticion",
         "consulta qx": "consulta",
+        "consulta": "consulta",
         "resolución": "resolucion resuelve",
         "requerimiento": "resolucion resuelve",
+        "resolucion resuelve": "resolucion resuelve",
         "oficio de citación": "citacion",
         "citación del recurso": "citacion",
+        "citacion": "citacion",
         "notificación": "notificacion",
         "notificación personal": "notificacion",
         "notificación por aviso": "notificacion",
         "notificación por publicación web": "notificacion",
         "notificación del recurso": "notificacion",
+        "notificacion": "notificacion",
         "recurso": "recurso",
-        "resolución del recurso": "recurso",
+        "resolución del recurso": "resolucion resuelve",
         "constancia de ejecutoria": "constancia de ejecutoria",
         "remisión a registro": "remision",
+        "remision": "remision",
         "desistimiento": "desistimiento",
+        "otro": "Otro",
     }
     nombre = equivalencias.get(tipo, "Otro")
     return buscar_o_crear_carpeta_drive(
@@ -1813,6 +1870,57 @@ def carpeta_drive_para_documento(service, carpeta_expediente_id, tipo_documento)
         carpeta_expediente_id,
         nombre,
     )
+
+
+def tipos_documentales_en_carpeta_drive(service, carpeta_expediente_id):
+    """Devuelve los tipos con archivos reales en las subcarpetas de Drive."""
+    if not service or not carpeta_expediente_id:
+        return set()
+
+    tipo_por_carpeta = {
+        "peticion": "Solicitud",
+        "consulta": "Consulta QX",
+        "resolucion resuelve": "Resolución",
+        "citacion": "Oficio de citación",
+        "notificacion": "Notificación",
+        "recurso": "Recurso",
+        "constancia de ejecutoria": "Constancia de ejecutoria",
+        "remision": "Remisión a registro",
+        "desistimiento": "Desistimiento",
+        "otro": "Otro",
+    }
+    try:
+        carpetas = service.files().list(
+            q=(
+                f"'{carpeta_expediente_id}' in parents and trashed = false "
+                "and mimeType = 'application/vnd.google-apps.folder'"
+            ),
+            fields="files(id,name)",
+            pageSize=1000,
+        ).execute().get("files", [])
+        presentes = set()
+        for carpeta in carpetas:
+            nombre_carpeta = str(carpeta.get("name") or "").strip().casefold()
+            tipo_fallback = tipo_por_carpeta.get(nombre_carpeta)
+            archivos = service.files().list(
+                q=f"'{carpeta['id']}' in parents and trashed = false",
+                fields="files(name,mimeType)",
+                pageSize=1000,
+            ).execute().get("files", [])
+            for archivo in archivos:
+                if archivo.get("mimeType") == "application/vnd.google-apps.folder":
+                    continue
+                nombre = os.path.splitext(str(archivo.get("name") or ""))[0]
+                evidencia = re.sub(r"[_-]+", " ", nombre)
+                tipo = clasificar_tipo_documento(evidencia, "")
+                presentes.add(tipo or tipo_fallback or "Otro")
+        return presentes
+    except Exception as error:
+        st.warning(
+            "No fue posible comprobar los complementos en sus carpetas de "
+            f"Drive; el checklist no los marcará como presentes: {error}"
+        )
+        return None
 
 
 def preparar_subcarpetas_documentales(service, carpeta_expediente_id):
@@ -1844,7 +1952,7 @@ def nombre_complemento_peticion(
 ):
     """Genera el nombre estándar de un bloque documental temporal."""
     fecha_formateada = fecha_para_nombre_carpeta(fecha)
-    tipo = _token_nombre_documento(recurso or "Otro").lower()
+    tipo = _token_nombre_documento(recurso or "Otro")
     base = "_".join(
         token
         for token in (
@@ -1925,6 +2033,7 @@ def preparar_carga_drive(
         preparar_subcarpetas_documentales(service, carpeta_expediente)
 
         documentos = []
+        errores_separacion = []
         for archivo in archivos:
             contenido = archivo.getvalue()
             if not archivo.name.lower().endswith(".pdf"):
@@ -1966,9 +2075,29 @@ def preparar_carga_drive(
             if partes_analizadas is not None and clave_partes in partes_analizadas:
                 partes = list(partes_analizadas.get(clave_partes) or [])
             else:
+                partes = []
+            if not partes:
                 partes = separar_pdf_completo(contenido, tipo_fallback)
-            for numero, parte in enumerate(partes, start=1):
+            partes_validas = []
+            for parte in partes:
+                contenido_parte = parte.get("contenido")
+                if not contenido_parte or contenido_parte == contenido:
+                    continue
+                partes_validas.append(parte)
+            if not partes_validas:
+                errores_separacion.append(
+                    f"No se generaron fragmentos documentales separados para "
+                    f"'{archivo.name}'. El PDF completo quedó en la carpeta "
+                    "Pendientes y no se copió dentro de ninguna subcarpeta."
+                )
+                continue
+            numeros_por_tipo = {}
+            for parte in partes_validas:
                 tipo = parte.get("tipo") or tipo_fallback or "Otro"
+                tipo_normalizado = normalizar_tipo_documental(tipo) or tipo
+                numeros_por_tipo[tipo_normalizado] = (
+                    numeros_por_tipo.get(tipo_normalizado, 0) + 1
+                )
                 carpeta_tipo = carpeta_drive_para_documento(
                     service,
                     carpeta_expediente,
@@ -1978,7 +2107,7 @@ def preparar_carga_drive(
                     radicado,
                     placa,
                     fecha,
-                    numero=numero,
+                    numero=numeros_por_tipo[tipo_normalizado],
                     recurso=tipo,
                 )
                 existente = buscar_archivo_drive(
@@ -2010,7 +2139,7 @@ def preparar_carga_drive(
                     "carga_id": carga_id,
                     "staged": True,
                 })
-        return documentos, carpeta_expediente, None
+        return documentos, carpeta_expediente, " ".join(errores_separacion) or None
     except (OSError, ValueError, TypeError, RuntimeError) as error:
         return [], None, f"No fue posible preparar la carga en Drive: {error}"
 
@@ -2071,7 +2200,7 @@ def renombrar_archivo_drive(service, file_id, nombre):
 
 
 def mover_carpeta_drive(service, folder_id, carpeta_destino_id):
-    """Mueve una carpeta de Peticion al año definitivo sin duplicar contenido."""
+    """Mueve una carpeta desde Pendientes al año definitivo sin duplicar contenido."""
     return mover_archivo_drive(service, folder_id, carpeta_destino_id)
 
 
@@ -2405,9 +2534,17 @@ def separar_pdf_con_textos(contenido, tipo_fallback, paginas_hibridas):
         if item.get("pagina_blanca") and len(texto.strip()) < 8:
             continue
         tipo = clasificar_tipo_documento(texto, "")
-        tipo = tipo or (actual["tipo"] if actual else detectar_estado_documento(
-            texto, tipo_fallback
-        ))
+        if not tipo:
+            tipo = (
+                actual["tipo"]
+                if actual
+                else (
+                    tipo_fallback
+                    if tipo_fallback in TIPOS_DOCUMENTALES
+                    and tipo_fallback != "Expediente completo"
+                    else "Otro"
+                )
+            )
         if actual and actual["tipo"] == tipo:
             actual["paginas"].append(pagina)
             actual["indices"].append(indice)
@@ -2433,6 +2570,14 @@ def separar_pdf_con_textos(contenido, tipo_fallback, paginas_hibridas):
             )),
         })
     return resultado
+
+
+def tipo_fallback_documento_archivo(nombre, tipo_seleccionado):
+    """Toma el tipo inequívoco del nombre cuando se cargan documentos separados."""
+    tipo_nombre = clasificar_tipo_documento(str(nombre or ""), "")
+    if tipo_nombre in TIPOS_DOCUMENTALES and tipo_nombre != "Expediente completo":
+        return tipo_nombre
+    return tipo_seleccionado
 
 
 def extraer_texto_por_partes_pdf(contenido, tipo_fallback="Solicitud"):
@@ -3151,7 +3296,16 @@ def separar_pdf_completo(contenido, tipo_fallback):
             texto = " ".join(parte for parte in (texto, texto_ocr) if parte)
             textos_paginas[numero_pagina] = texto
             tipo_detectado = clasificar_tipo_documento(texto, "")
-            tipo = tipo_detectado or (actual["tipo"] if actual else detectar_estado_documento(texto, tipo_fallback))
+            tipo = tipo_detectado or (
+                actual["tipo"]
+                if actual
+                else (
+                    tipo_fallback
+                    if tipo_fallback in TIPOS_DOCUMENTALES
+                    and tipo_fallback != "Expediente completo"
+                    else "Otro"
+                )
+            )
             if actual and actual["tipo"] == tipo:
                 actual["paginas"].append(pagina)
                 actual["indices"].append(numero_pagina)
@@ -5345,6 +5499,10 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     f"**{archivo.name}**. El OCR puede tardar según el número de páginas."
                 )
                 contenido = archivo.getvalue()
+                tipo_fallback_archivo = tipo_fallback_documento_archivo(
+                    archivo.name,
+                    tipo_documento,
+                )
                 contenido_analizable = contenido
                 if not archivo.name.lower().endswith(".pdf"):
                     try:
@@ -5371,10 +5529,21 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     )
                     partes_analisis = separar_pdf_con_textos(
                         contenido_analizable,
-                        tipo_documento,
+                        tipo_fallback_archivo,
                         paginas_hibridas,
                     )
                     clave_contenido = huella_contenido(contenido_analizable)
+                    if (
+                        len(partes_analisis) <= 1
+                        and paginas_hibridas
+                        and len(paginas_hibridas) > 1
+                    ):
+                        partes_completas = separar_pdf_completo(
+                            contenido_analizable,
+                            tipo_fallback_archivo,
+                        )
+                        if len(partes_completas) > len(partes_analisis):
+                            partes_analisis = partes_completas
                     partes_analizadas_por_archivo[clave_contenido] = partes_analisis
                     if partes_analisis and len(partes_analisis) > 1 and not texto_archivo:
                         textos_partes = []
@@ -5439,6 +5608,12 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             contenidos_visuales_ia.append(
                                 (archivo.name, contenido_analizable, paginas_criticas)
                             )
+                    if not partes_analisis:
+                        partes_analisis = separar_pdf_completo(
+                            contenido_analizable,
+                            tipo_fallback_archivo,
+                        )
+                        partes_analizadas_por_archivo[clave_contenido] = partes_analisis
                 else:
                     texto_archivo = normalizar_texto_documento(
                         extraer_texto_pdf_con_progreso(
@@ -5521,11 +5696,11 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         huella_contenido(contenido_analizable),
                         [],
                     )
-                    tipos_documentales_archivo.update(
+                    tipos_documentales_archivo = {
                         parte.get("tipo")
                         for parte in partes_clasificadas
                         if parte.get("tipo")
-                    )
+                    }
                 tipos_documentales_carga.update(tipos_documentales_archivo)
             barra_analisis.progress(
                 0.75,
@@ -5769,7 +5944,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                 )
                 if error_staging:
                     st.warning(error_staging)
-                elif documentos_staged:
+                if documentos_staged:
                     carga_staging[carga_id] = {
                         "documentos": documentos_staged,
                         "drive_folder_id": carpeta_staged,
@@ -5779,12 +5954,15 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             else "EXPEDIENTE_PRINCIPAL"
                         ),
                     }
+                if documentos_staged and not error_staging:
                     st.success(
                         "Partes documentales subidas a Drive para continuar el análisis. "
                         "El PDF unificado se generará al completar el registro."
                     )
             staged_actual = carga_staging.get(carga_id) or {}
             for documento_staged in staged_actual.get("documentos", []):
+                if documento_staged.get("es_pdf_completo"):
+                    continue
                 tipo_staged = normalizar_tipo_documental(
                     documento_staged.get("tipo_documento", "")
                 )
@@ -5809,8 +5987,16 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
             )
             if tipo_checklist in DOCUMENTOS_BASE_POR_CASO:
                 documentos_checklist = set(tipos_documentales_carga)
-                if tipo_checklist == "Con recurso":
-                    documentos_checklist.add("Recurso")
+                if drive_service:
+                    tipos_en_drive = tipos_documentales_en_carpeta_drive(
+                        drive_service,
+                        staged_actual.get("drive_folder_id"),
+                    )
+                    documentos_checklist = tipos_en_drive or set()
+                    st.caption(
+                        "El checklist confirma documentos únicamente cuando "
+                        "encuentra sus archivos en las subcarpetas de Drive."
+                    )
                 renderizar_checklist_documental(
                     tipo_checklist,
                     sorted(documentos_checklist),
@@ -5923,7 +6109,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         str(destino_fecha)
                     ).year
                     destino_texto = (
-                        f"Peticion/{anio_destino}/"
+                        f"{anio_destino}/"
                         f"{destino_radicado or 'RADICADO_PENDIENTE'}_"
                         f"{destino_placa or 'PLACA_PENDIENTE'}"
                     )
@@ -5931,7 +6117,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                     destino_texto = "Carpeta anual pendiente de confirmar la fecha de petición"
             else:
                 destino_texto = (
-                    "Peticion/ "
+                    "Pendientes/ "
                     f"{destino_radicado or destino_placa or 'IDENTIFICADOR_PENDIENTE'}"
                 )
             vista_col, destino_col = st.columns([1.35, 1])
@@ -6072,10 +6258,13 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
             f"foliacion_{carga_id}": foliacion_inicial,
         }
         carga_anterior = st.session_state.get("_registro_carga_id")
+        for clave, valor in campos_formulario.items():
+            if valor not in (None, "") and (
+                carga_anterior != carga_id
+                or not str(st.session_state.get(clave, "")).strip()
+            ):
+                st.session_state[clave] = valor
         if carga_anterior != carga_id:
-            for clave, valor in campos_formulario.items():
-                if valor not in (None, ""):
-                    st.session_state.setdefault(clave, valor)
             st.session_state["_registro_carga_id"] = carga_id
 
         st.subheader("2. Confirmar y completar el expediente")
@@ -6495,6 +6684,10 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             f"{total_guardado}: **{archivo.name}**"
                         )
                         contenido_original = archivo.getvalue()
+                        tipo_fallback_archivo = tipo_fallback_documento_archivo(
+                            archivo.name,
+                            tipo_documento,
+                        )
                         if archivo.name.lower().endswith(".pdf"):
                             partes = partes_analizadas_por_archivo.get(
                                 huella_contenido(contenido_original)
@@ -6502,7 +6695,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             if partes is None:
                                 partes = separar_pdf_completo(
                                     contenido_original,
-                                    tipo_documento,
+                                    tipo_fallback_archivo,
                                 )
                             if not partes:
                                 st.warning(
@@ -6516,7 +6709,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             )
                             partes = [{
                                 "contenido": contenido_imagen,
-                                "tipo": tipo_documento,
+                                "tipo": tipo_fallback_archivo,
                                 "paginas": 1,
                             }]
                         for numero, parte in enumerate(partes, start=1):
@@ -6533,10 +6726,6 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                                 "nombre_original": archivo.name,
                                 "texto_analizado": (
                                     parte.get("texto")
-                                    or textos_analizados.get(
-                                        huella_contenido(contenido_original),
-                                        "",
-                                    )
                                 ),
                                 "paginas_por_seccion": parte.get(
                                     "paginas_por_seccion",
@@ -6575,7 +6764,10 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             nombre_original,
                         )
                         texto_pdf = archivo_preparado.get("texto_analizado")
-                        if texto_pdf is None and nombre_original.lower().endswith(".pdf"):
+                        if (
+                            not str(texto_pdf or "").strip()
+                            and nombre_original.lower().endswith(".pdf")
+                        ):
                             texto_pdf = extraer_texto_pdf(contenido_archivo)
                         texto_pdf = texto_pdf or ""
                         datos_pdf = extraer_datos_pdf(
@@ -6583,9 +6775,9 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                             texto=texto_pdf,
                         )
                         tipo_detectado = clasificar_tipo_caso(texto_pdf, nombre_original)
-                        tipo_documento_final = clasificar_tipo_documento(
+                        tipo_documento_final = tipo_documento_de_parte(
                             texto_pdf,
-                            archivo_preparado["tipo"],
+                            archivo_preparado.get("tipo"),
                         )
                         nombre_drive = nombre_documento_expediente(
                             datos_pdf.get("radicado_padre") or radicado_padre,
@@ -7019,7 +7211,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
                         canvas_list
                     )
                     st.warning(
-                        "El documento quedó en la carpeta temporal de Peticion. "
+                        "El documento quedó en la carpeta temporal Pendientes. "
                         "Cuando registres la petición con este radicado, "
                         "se podrá reubicar y unir al expediente."
                     )

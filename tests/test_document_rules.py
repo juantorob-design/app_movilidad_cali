@@ -36,6 +36,13 @@ class TestDocumentRules(unittest.TestCase):
         texto = "No se interpuso recurso y consta ejecutoria."
         self.assertEqual(clasificar_tipo_caso(texto), "Sin recurso")
 
+    def test_positive_resource_evidence_takes_precedence_over_no_resource_phrase(self):
+        texto = (
+            "La constancia indica que no se interpuso recurso. "
+            "Después se presentó recurso de reposición."
+        )
+        self.assertEqual(clasificar_tipo_caso(texto), "Con recurso")
+
     def test_identifica_tipo_documental(self):
         self.assertEqual(
             normalizar_tipo_documental("Resolución del recurso en el expediente"),
@@ -67,6 +74,56 @@ class TestDocumentRules(unittest.TestCase):
         self.assertEqual(
             clasificar_tipo_documento("oficio de citación al propietario", "Otro"),
             "Oficio de citación",
+        )
+
+    def test_references_to_a_resolution_do_not_classify_a_contract_as_a_resolution(self):
+        self.assertEqual(
+            clasificar_tipo_documento(
+                "Contrato de vinculación de vehículo. Se anexa copia de la resolución.",
+                "Otro",
+            ),
+            "Otro",
+        )
+
+    def test_classifies_a_resolution_by_its_number_and_decision_heading(self):
+        self.assertEqual(
+            clasificar_tipo_documento(
+                "Resolución No. 4223.01.03.1614. RESUELVE: desvincular el vehículo.",
+                "Otro",
+            ),
+            "Resolución",
+        )
+
+    def test_classifies_resolution_decision_and_fallo_headings(self):
+        for texto in (
+            "Resolución que resuelve el acto administrativo",
+            "Resolución de fallo del proceso de desvinculación",
+        ):
+            with self.subTest(texto=texto):
+                self.assertEqual(
+                    clasificar_tipo_documento(texto, "Otro"),
+                    "Resolución",
+                )
+
+    def test_identifies_supporting_documents_as_other(self):
+        for texto in (
+            "Cláusulas del contrato de vinculación",
+            "Tarjeta de operación",
+            "Licencia de tránsito",
+        ):
+            with self.subTest(texto=texto):
+                self.assertEqual(
+                    clasificar_tipo_documento(texto, "Solicitud"),
+                    "Otro",
+                )
+
+    def test_weak_document_mention_keeps_the_continuation_fallback(self):
+        self.assertEqual(
+            clasificar_tipo_documento(
+                "La solicitud menciona el recurso presentado anteriormente.",
+                "Otro",
+            ),
+            "Otro",
         )
 
 

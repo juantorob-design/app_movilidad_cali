@@ -11,6 +11,6 @@ Start-Process -FilePath $python -ArgumentList @(
     "--browser.gatherUsageStats=false",
     "--browser.serverAddress=127.0.0.1",
     "--server.port=$port"
-)
+) -WindowStyle Hidden
 Start-Sleep -Seconds 2
 Start-Process "http://127.0.0.1:$port"

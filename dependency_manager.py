@@ -45,6 +45,15 @@ _pull_status = {
 }
 
 
+def _ocultar_consola_kwargs() -> dict:
+    """Evita ventanas de consola para procesos auxiliares en Windows."""
+    if os.name != "nt":
+        return {}
+    return {
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    }
+
+
 def buscar_ollama() -> str | None:
     """Encuentra Ollama en PATH o en sus ubicaciones habituales de Windows."""
     candidatos = [
@@ -68,6 +77,7 @@ def obtener_modelos_ollama(ollama_path: str | None = None) -> list[str]:
             text=True,
             timeout=30,
             check=False,
+            **_ocultar_consola_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
         return []
@@ -100,8 +110,7 @@ def iniciar_servicio_ollama() -> bool:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0),
+            **_ocultar_consola_kwargs(),
         )
     except OSError:
         return False
@@ -145,6 +154,7 @@ def descargar_modelo_en_segundo_plano(
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                **_ocultar_consola_kwargs(),
             )
             if proceso.stdout:
                 for linea in proceso.stdout:
@@ -185,6 +195,7 @@ def descargar_modelo(
         text=True,
         encoding="utf-8",
         errors="replace",
+        **_ocultar_consola_kwargs(),
     )
     if proceso.stdout:
         for linea in proceso.stdout:
@@ -247,6 +258,7 @@ def instalar_ollama_desde_manifesto(
             text=True,
             timeout=600,
             check=False,
+            **_ocultar_consola_kwargs(),
         )
         if resultado.returncode != 0:
             raise RuntimeError(
