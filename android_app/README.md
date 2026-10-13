@@ -151,6 +151,9 @@ datos por expedientes de demostración. En el emulador se validó la instalació
 y el arranque de la APK; la API local también responde correctamente en
 `/health`. El flujo móvil aún requiere una prueba de inicio de sesión y
 operaciones de extremo a extremo con un expediente de prueba autorizado.
+Si una instalación conserva un `token.json` emitido por un cliente OAuth anterior,
+el programa pedirá volver a autorizar Google con el cliente de escritorio actual;
+esto no cambia la cuenta propietaria de Drive/Sheets.
 
 Para el despliegue de prueba en Render Free, consulta
 [`docs/RENDER_GRATUITO.md`](../docs/RENDER_GRATUITO.md). Al iniciar sesión, la
@@ -170,6 +173,11 @@ guardó en Credenciales de Windows con el destino
 sesión, mientras DPAPI protege la copia local usada por el wrapper. No publiques
 el APK hasta probar inicio de sesión y operaciones con una cuenta y documentos
 ficticios.
+
+La siguiente compilación funcional debe usar `versionName` 0.1.3 y
+`versionCode` 4 para poder actualizar la 0.1.2 ya instalada. Debe generarse
+después de desplegar y comprobar en Render las rutas de trabajos OCR
+asíncronos; una Release que las consulta no funciona contra una API anterior.
 
 El APK debug se genera en
 `app/build/outputs/apk/debug/app-debug.apk`. Si no se pasan las propiedades,

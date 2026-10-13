@@ -10,7 +10,7 @@ val apiBaseUrl = providers.gradleProperty("API_BASE_URL")
     .orElse("https://configure-your-api.example.invalid/")
     .get()
 val googleWebClientId = providers.gradleProperty("GOOGLE_WEB_CLIENT_ID")
-    .orElse("865100334282-pl21ckiipbqu2gljjc99ki4hoiqngopm.apps.googleusercontent.com")
+    .orElse("1019857870350-ccrqd53kcl0c6k799f0om2p5fnloviij.apps.googleusercontent.com")
     .get()
 val spreadsheetId = providers.gradleProperty("SISTEMA_SPREADSHEET_ID")
     .orElse("1oQ5GnxSj4_gGA-p2NjlN3o0uDOLaIELZu4gpohLK6Uo")
@@ -18,6 +18,17 @@ val spreadsheetId = providers.gradleProperty("SISTEMA_SPREADSHEET_ID")
 val driveFolderId = providers.gradleProperty("SISTEMA_DRIVE_FOLDER_ID")
     .orElse("1vwsw0RKXsoYYqXwhH2OZPaD-BrTiUUyl")
     .get()
+val releaseStoreFile = providers.environmentVariable("ANDROID_RELEASE_STORE_FILE").orNull
+val releaseKeyAlias = providers.environmentVariable("ANDROID_RELEASE_KEY_ALIAS").orNull
+val releaseStorePassword = providers.environmentVariable("ANDROID_RELEASE_STORE_PASSWORD").orNull
+val releaseKeyPassword = providers.environmentVariable("ANDROID_RELEASE_KEY_PASSWORD").orNull
+val releaseSigningValues = listOf(
+    releaseStoreFile,
+    releaseKeyAlias,
+    releaseStorePassword,
+    releaseKeyPassword
+)
+val releaseSigningConfigured = releaseSigningValues.all { !it.isNullOrBlank() }
 
 val validateReleaseApiUrl by tasks.registering {
     doLast {
@@ -33,6 +44,18 @@ val validateReleaseApiUrl by tasks.registering {
     }
 }
 
+val validateReleaseSigning by tasks.registering {
+    doLast {
+        require(releaseSigningConfigured) {
+            "Release builds require ANDROID_RELEASE_STORE_FILE, ANDROID_RELEASE_KEY_ALIAS, " +
+                "ANDROID_RELEASE_STORE_PASSWORD, and ANDROID_RELEASE_KEY_PASSWORD."
+        }
+        require(file(releaseStoreFile!!).isFile) {
+            "The Android release keystore does not exist at ANDROID_RELEASE_STORE_FILE."
+        }
+    }
+}
+
 tasks.configureEach {
     if (
         name.startsWith("assembleRelease") ||
@@ -40,6 +63,7 @@ tasks.configureEach {
         name.startsWith("packageRelease")
     ) {
         dependsOn(validateReleaseApiUrl)
+        dependsOn(validateReleaseSigning)
     }
 }
 
@@ -51,12 +75,31 @@ android {
         applicationId = "co.sistemadesvinculaciones.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.1.2"
+        versionCode = 4
+        versionName = "0.1.3"
         buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
         buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"$googleWebClientId\"")
         buildConfigField("String", "SPREADSHEET_ID", "\"$spreadsheetId\"")
         buildConfigField("String", "DRIVE_FOLDER_ID", "\"$driveFolderId\"")
+    }
+
+    if (releaseSigningConfigured) {
+        signingConfigs {
+            create("release") {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            if (releaseSigningConfigured) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
     }
 
     compileOptions {

@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+import io
+import logging
 import os
+import threading
+import time
 import uuid
+from contextvars import ContextVar
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+    status,
+)
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .auth import MobileAuthenticationError, validar_identidad_google
@@ -27,6 +41,7 @@ from .drive import (
     vincular_complemento_pendiente,
 )
 from .expedientes import (
+    FIELDS_TO_SHEET_COLUMNS,
     cargar_expedientes_sheets,
     buscar_expedientes,
     google_session_for_owner,
@@ -38,6 +53,15 @@ from . import shared_workspace
 
 ADMIN_ROLES = {"Administrador", "Super Administrador"}
 EDITOR_ROLES = {"Modificador", *ADMIN_ROLES}
+UPLOAD_JOB_TTL_SECONDS = 4 * 60 * 60
+MAX_UPLOAD_JOBS = 100
+_UPLOAD_JOBS: dict[str, dict] = {}
+_UPLOAD_JOBS_LOCK = threading.Lock()
+_CURRENT_UPLOAD_JOB: ContextVar[str | None] = ContextVar(
+    "current_upload_job",
+    default=None,
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Sistema de Desvinculaciones API",
@@ -158,6 +182,129 @@ def _find_case(records: dict[str, dict], radicado: str) -> dict | None:
         ),
         None,
     )
+
+
+def _expire_upload_jobs(now: float) -> None:
+    expired = [
+        job_id
+        for job_id, job in _UPLOAD_JOBS.items()
+        if now - job["created_at"] > UPLOAD_JOB_TTL_SECONDS
+    ]
+    for job_id in expired:
+        _UPLOAD_JOBS.pop(job_id, None)
+
+
+def _create_upload_job(user: dict[str, str]) -> str:
+    now = time.monotonic()
+    with _UPLOAD_JOBS_LOCK:
+        _expire_upload_jobs(now)
+        if any(
+            job["estado"] in {"en_cola", "procesando"}
+            for job in _UPLOAD_JOBS.values()
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Ya hay una carga documental en proceso. Intenta de nuevo cuando termine.",
+            )
+        if len(_UPLOAD_JOBS) >= MAX_UPLOAD_JOBS:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="La cola de cargas está llena. Intenta de nuevo más tarde.",
+            )
+        job_id = uuid.uuid4().hex
+        _UPLOAD_JOBS[job_id] = {
+            "estado": "en_cola",
+            "progreso": {"paginas_procesadas": 0, "paginas_totales": 0},
+            "resultado": None,
+            "error": "",
+            "owner": str(user.get("email") or "").strip().casefold(),
+            "created_at": now,
+        }
+        return job_id
+
+
+def _update_upload_job_progress(job_id: str, processed: int, total: int) -> None:
+    with _UPLOAD_JOBS_LOCK:
+        job = _UPLOAD_JOBS.get(job_id)
+        if job:
+            job["estado"] = "procesando"
+            job["progreso"] = {
+                "paginas_procesadas": processed,
+                "paginas_totales": total,
+            }
+
+
+def _run_upload_job(
+    job_id: str,
+    radicado: str,
+    user: dict[str, str],
+    content: bytes,
+    filename: str,
+    tipo_documento: str,
+    placa_complemento: str,
+    complemento_sin_vincular: bool,
+) -> None:
+    token = _CURRENT_UPLOAD_JOB.set(job_id)
+    with _UPLOAD_JOBS_LOCK:
+        job = _UPLOAD_JOBS.get(job_id)
+        if job:
+            job["estado"] = "procesando"
+    try:
+        result = subir_pdf_expediente(
+            radicado,
+            user,
+            UploadFile(file=io.BytesIO(content), filename=filename),
+            tipo_documento,
+            placa_complemento,
+            complemento_sin_vincular,
+        )
+    except HTTPException as error:
+        with _UPLOAD_JOBS_LOCK:
+            job = _UPLOAD_JOBS.get(job_id)
+            if job:
+                job["estado"] = "error"
+                job["error"] = str(error.detail)
+    except Exception:
+        logger.exception("La carga asíncrona del documento %s falló.", job_id)
+        with _UPLOAD_JOBS_LOCK:
+            job = _UPLOAD_JOBS.get(job_id)
+            if job:
+                job["estado"] = "error"
+                job["error"] = "No se pudo procesar el documento por un error interno."
+    else:
+        with _UPLOAD_JOBS_LOCK:
+            job = _UPLOAD_JOBS.get(job_id)
+            if job:
+                job["estado"] = "completado"
+                job["resultado"] = result
+                page_total = int(result.get("paginas") or 0)
+                job["progreso"] = {
+                    "paginas_procesadas": page_total,
+                    "paginas_totales": page_total,
+                }
+    finally:
+        _CURRENT_UPLOAD_JOB.reset(token)
+
+
+OCR_FIELD_MAP = {
+    "radicado_padre": "radicado_padre",
+    "fecha_solicitud": "fecha_solicitud",
+    "placa": "placa",
+    "empresa": "empresa",
+    "nit": "nit_empresa",
+    "propietario": "propietario",
+    "cedula": "cedula_propietario",
+    "direccion_empresa": "direccion_empresa",
+    "direccion_propietario": "direccion_propietario",
+    "resolucion": "resolucion",
+    "fecha_resolucion": "fecha_resolucion",
+    "recurso": "recurso",
+    "fecha_recurso": "fecha_recurso",
+    "tipo_notificacion": "tipo_notificacion",
+    "fecha_notificacion": "fecha_notificacion",
+    "fecha_ejecutoria": "fecha_ejecutoria",
+    "caso": "caso",
+}
 
 
 @app.get("/api/v1/me")
@@ -312,6 +459,35 @@ def buscar_expedientes_endpoint(
     }
 
 
+@app.get("/api/v1/expedientes/upload-jobs/{job_id}")
+def estado_trabajo_carga_pdf(
+    job_id: str,
+    user: Annotated[dict[str, str], Depends(get_current_user)],
+) -> dict:
+    _require_roles(user, EDITOR_ROLES)
+    with _UPLOAD_JOBS_LOCK:
+        _expire_upload_jobs(time.monotonic())
+        job = _UPLOAD_JOBS.get(job_id)
+        if (
+            not job
+            or job["owner"] != str(user.get("email") or "").strip().casefold()
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No se encontró el trabajo de carga.",
+            )
+        response = {
+            "job_id": job_id,
+            "estado": job["estado"],
+            "progreso": dict(job["progreso"]),
+        }
+        if job["estado"] == "completado":
+            response["resultado"] = job["resultado"]
+        elif job["estado"] == "error":
+            response["error"] = job["error"]
+        return response
+
+
 @app.get("/api/v1/expedientes/{radicado}")
 def obtener_expediente_endpoint(
     radicado: str,
@@ -363,6 +539,51 @@ def actualizar_expediente(
         _raise_operation_error(error)
 
 
+@app.post(
+    "/api/v1/expedientes/{radicado}/upload-pdf/jobs",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def iniciar_trabajo_carga_pdf(
+    radicado: str,
+    background_tasks: BackgroundTasks,
+    user: Annotated[dict[str, str], Depends(get_current_user)],
+    archivo: UploadFile = File(...),
+    tipo_documento: str = Form(default="Otro"),
+    placa_complemento: str = Form(default=""),
+    complemento_sin_vincular: bool = Form(default=False),
+) -> dict:
+    _require_roles(user, EDITOR_ROLES)
+    if tipo_documento not in DOCUMENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El tipo documental seleccionado no es válido.",
+        )
+    max_upload_bytes = 50 * 1024 * 1024
+    content = archivo.file.read(max_upload_bytes + 1)
+    if len(content) > max_upload_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="El archivo supera el tamaño máximo de 50 MB.",
+        )
+    job_id = _create_upload_job(user)
+    background_tasks.add_task(
+        _run_upload_job,
+        job_id,
+        radicado,
+        user,
+        content,
+        archivo.filename or "documento",
+        tipo_documento,
+        placa_complemento,
+        complemento_sin_vincular,
+    )
+    return {
+        "job_id": job_id,
+        "estado": "en_cola",
+        "progreso": {"paginas_procesadas": 0, "paginas_totales": 0},
+    }
+
+
 @app.post("/api/v1/expedientes/{radicado}/upload-pdf")
 def subir_pdf_expediente(
     radicado: str,
@@ -393,8 +614,21 @@ def subir_pdf_expediente(
         valid, detail = validar_pdf(content)
         if not valid:
             raise ValueError(detail)
-        separated = separar_pdf(content, tipo_documento)
+        job_id = _CURRENT_UPLOAD_JOB.get()
+        if job_id:
+            separated = separar_pdf(
+                content,
+                tipo_documento,
+                progress_callback=lambda processed, total: _update_upload_job_progress(
+                    job_id,
+                    processed,
+                    total,
+                ),
+            )
+        else:
+            separated = separar_pdf(content, tipo_documento)
         suggested_case = str(separated.get("clasificacion_final") or "")
+        detected_fields = separated.get("datos_extraidos") or {}
 
         cases = cargar_expedientes_configurados()
         case = _find_case(cases, radicado)
@@ -484,25 +718,57 @@ def subir_pdf_expediente(
         final_case = str(case.get("caso") or "").strip() if case else ""
         classification_updated = False
         classification_warning = ""
-        if case and not final_case and suggested_case:
+        ocr_fields_saved = []
+        ocr_fields_pending = []
+        ocr_updates = {}
+        if case:
+            for source_field, target_field in OCR_FIELD_MAP.items():
+                value = (
+                    suggested_case
+                    if source_field == "caso"
+                    else str(detected_fields.get(source_field) or "").strip()
+                )
+                if (
+                    value
+                    and target_field in FIELDS_TO_SHEET_COLUMNS
+                    and not str(case.get(target_field) or "").strip()
+                ):
+                    ocr_updates[target_field] = value
+        if case and ocr_updates:
             try:
-                guardar_expediente_sheets(
+                saved_fields = guardar_expediente_sheets(
                     {
                         "radicado_padre": str(case["radicado_padre"]),
                         "fecha_solicitud": normalizar_fecha(fecha),
                         "placa": placa,
-                        "caso": suggested_case,
+                        **ocr_updates,
                     },
                     radicado_existente=str(case["radicado_padre"]),
+                    ignorar_columnas_faltantes=True,
                 )
             except (RuntimeError, ValueError) as error:
+                ocr_fields_pending = list(ocr_updates)
                 classification_warning = (
-                    "Los documentos se guardaron, pero la clasificación no se "
-                    f"pudo actualizar en Sheets: {error}"
+                    "Los documentos se guardaron, pero algunos campos OCR no se "
+                    f"pudieron completar en Sheets: {error}"
                 )
             else:
-                final_case = suggested_case
-                classification_updated = True
+                updated_values = saved_fields["expediente"]
+                case.update(updated_values)
+                ocr_fields_saved = [
+                    field for field in ocr_updates if field in updated_values
+                ]
+                ocr_fields_pending = saved_fields.get("campos_no_guardados", [])
+                final_case = str(case.get("caso") or "").strip()
+                classification_updated = (
+                    bool(suggested_case) and "caso" in updated_values
+                )
+                missing_fields = saved_fields.get("campos_no_guardados", [])
+                if missing_fields:
+                    classification_warning = (
+                        "Se guardaron los campos disponibles; faltan columnas en "
+                        "Sheets para: " + ", ".join(missing_fields) + "."
+                    )
         return {
             "radicado_padre": parent_radicado,
             "carpeta_drive": f"https://drive.google.com/drive/folders/{folder_id}",
@@ -519,6 +785,9 @@ def subir_pdf_expediente(
             "clasificacion_sugerida": suggested_case,
             "clasificacion_final": final_case,
             "clasificacion_actualizada": classification_updated,
+            "datos_extraidos": detected_fields,
+            "campos_ocr_guardados": ocr_fields_saved,
+            "campos_ocr_pendientes": ocr_fields_pending,
             "advertencia": classification_warning,
         }
     except (FileExistsError, LookupError, ValueError, RuntimeError) as error:

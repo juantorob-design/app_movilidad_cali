@@ -1,14 +1,23 @@
+import asyncio
 import io
 import os
 import unittest
 from unittest.mock import patch
 
 import fitz
-from fastapi import UploadFile
+from fastapi import BackgroundTasks, HTTPException, UploadFile
+from fastapi.testclient import TestClient
 from PIL import Image
 
 from mobile_api import drive, main
-from mobile_api.documents import convertir_imagen_a_pdf, separar_pdf, validar_pdf
+from mobile_api.documents import (
+    _OCR_CACHE,
+    _ocr_page,
+    _pagina_en_blanco,
+    convertir_imagen_a_pdf,
+    separar_pdf,
+    validar_pdf,
+)
 from mobile_api.expedientes import _google_session, guardar_expediente_sheets
 
 
@@ -142,8 +151,142 @@ class TestMobileApiSheetsWrites(unittest.TestCase):
                 guardar_expediente_sheets(self.create_payload)
         write_values.assert_not_called()
 
+    def test_can_skip_missing_optional_columns_without_skipping_available_fields(self):
+        values = {
+            "values": [
+                ["RAD PADRE", "FECHA SOLICITUD", "PLACA"],
+                ["RAD-2026-010", "2026-03-01", "ABC123"],
+            ]
+        }
+        payload = {**self.create_payload, "propietario": "Ana Pérez"}
+        with (
+            patch.dict(os.environ, self.base_environment, clear=True),
+            patch("mobile_api.expedientes.google_session_for_owner"),
+            patch("mobile_api.expedientes._sheet_title", return_value="tabla_2"),
+            patch("mobile_api.expedientes._google_get", return_value=values),
+            patch("mobile_api.expedientes._write_sheet_cells") as write_cells,
+        ):
+            result = guardar_expediente_sheets(
+                payload,
+                radicado_existente="RAD-2026-010",
+                ignorar_columnas_faltantes=True,
+            )
+
+        self.assertEqual(result["campos_no_guardados"], ["caso", "propietario"])
+        self.assertNotIn("caso", result["expediente"])
+        self.assertNotIn("propietario", result["expediente"])
+        self.assertEqual(
+            write_cells.call_args.args[2],
+            [
+                {"range": "'tabla_2'!A2", "values": [["RAD-2026-010"]]},
+                {"range": "'tabla_2'!B2", "values": [["2026-03-01"]]},
+                {"range": "'tabla_2'!C2", "values": [["ABC123"]]},
+            ],
+        )
+
 
 class TestMobileApiDocumentWorkflow(unittest.TestCase):
+    def test_async_upload_job_returns_progress_and_result_only_to_its_owner(self):
+        user = {"role": "Modificador", "email": "operator@example.com"}
+        upload = UploadFile(file=io.BytesIO(b"%PDF-document"), filename="expediente.pdf")
+        tasks = BackgroundTasks()
+
+        def process_upload(_radicado, _user, document, *_args):
+            document.file.close()
+            return {"paginas": 2, "clasificacion_final": "Con recurso"}
+
+        with patch.object(main, "subir_pdf_expediente", side_effect=process_upload):
+            accepted = main.iniciar_trabajo_carga_pdf(
+                "RAD-2026-010",
+                tasks,
+                user,
+                upload,
+                tipo_documento="Otro",
+            )
+            job_id = accepted["job_id"]
+            self.addCleanup(lambda: main._UPLOAD_JOBS.pop(job_id, None))
+            self.assertEqual(accepted["estado"], "en_cola")
+            asyncio.run(tasks())
+
+        completed = main.estado_trabajo_carga_pdf(job_id, user)
+        self.assertEqual(completed["estado"], "completado")
+        self.assertEqual(completed["progreso"]["paginas_procesadas"], 2)
+        self.assertEqual(
+            completed["resultado"]["clasificacion_final"],
+            "Con recurso",
+        )
+        with self.assertRaises(HTTPException) as error:
+            main.estado_trabajo_carga_pdf(
+                job_id,
+                {"role": "Modificador", "email": "other@example.com"},
+            )
+        self.assertEqual(error.exception.status_code, 404)
+
+    def test_async_upload_http_endpoint_returns_accepted_job_and_status(self):
+        user = {"role": "Modificador", "email": "operator@example.com"}
+        previous_override = main.app.dependency_overrides.get(main.get_current_user)
+        main.app.dependency_overrides[main.get_current_user] = lambda: user
+
+        def process_upload(_radicado, _user, document, *_args):
+            document.file.close()
+            return {"paginas": 1, "clasificacion_final": "Sin recurso"}
+
+        try:
+            with patch.object(main, "subir_pdf_expediente", side_effect=process_upload):
+                client = TestClient(main.app)
+                accepted = client.post(
+                    "/api/v1/expedientes/RAD-2026-010/upload-pdf/jobs",
+                    files={"archivo": ("expediente.pdf", b"%PDF-document", "application/pdf")},
+                    data={"tipo_documento": "Otro"},
+                )
+                self.assertEqual(accepted.status_code, 202)
+                job_id = accepted.json()["job_id"]
+                self.addCleanup(lambda: main._UPLOAD_JOBS.pop(job_id, None))
+                completed = client.get(
+                    f"/api/v1/expedientes/upload-jobs/{job_id}",
+                )
+        finally:
+            if previous_override is None:
+                main.app.dependency_overrides.pop(main.get_current_user, None)
+            else:
+                main.app.dependency_overrides[main.get_current_user] = previous_override
+
+        self.assertEqual(completed.status_code, 200)
+        self.assertEqual(completed.json()["estado"], "completado")
+        self.assertEqual(
+            completed.json()["resultado"]["clasificacion_final"],
+            "Sin recurso",
+        )
+
+    def test_page_ocr_is_cached_for_identical_pdf_page_and_scale(self):
+        class Pixmap:
+            def tobytes(self, _format):
+                return b"rendered-page"
+
+        cache_key = ("test-pdf-digest", 0, 1.2)
+        _OCR_CACHE.clear()
+        self.addCleanup(_OCR_CACHE.clear)
+        engine = unittest.mock.Mock(
+            return_value=([["box", "recognized text"]], None)
+        )
+
+        first = _ocr_page(engine, Pixmap(), cache_key)
+        second = _ocr_page(engine, Pixmap(), cache_key)
+
+        self.assertEqual(first, "recognized text")
+        self.assertEqual(second, first)
+        engine.assert_called_once_with(b"rendered-page")
+
+    def test_blank_page_detection_ignores_white_pages_and_keeps_scanned_pages(self):
+        class Pixmap:
+            n = 3
+
+            def __init__(self, pixel):
+                self.samples = bytes(pixel) * 100
+
+        self.assertTrue(_pagina_en_blanco(Pixmap([255, 255, 255])))
+        self.assertFalse(_pagina_en_blanco(Pixmap([0, 0, 0])))
+
     def test_png_and_jpeg_images_convert_to_valid_single_page_pdfs(self):
         for image_format in ("PNG", "JPEG"):
             with self.subTest(image_format=image_format):
@@ -188,6 +331,7 @@ class TestMobileApiDocumentWorkflow(unittest.TestCase):
 
     def test_pdf_is_split_by_document_type_and_continuation_pages_stay_together(self):
         source = fitz.open()
+        progress = []
         first = source.new_page()
         first.insert_text(
             (50, 80),
@@ -201,15 +345,21 @@ class TestMobileApiDocumentWorkflow(unittest.TestCase):
             "RESOLUCION No 999 por la cual se resuelve la solicitud de desvinculacion",
         )
 
-        result = separar_pdf(source.tobytes())
+        result = separar_pdf(
+            source.tobytes(),
+            progress_callback=lambda processed, total: progress.append(
+                (processed, total)
+            ),
+        )
 
         self.assertEqual(
             [(block["tipo_documento"], block["paginas"]) for block in result["bloques"]],
             [("Solicitud", [1, 2]), ("Resolución", [3])],
         )
+        self.assertEqual(progress, [(1, 3), (2, 3), (3, 3)])
         source.close()
 
-    def test_scanned_pdf_retries_ocr_at_higher_resolution_if_classification_is_unknown(self):
+    def test_scanned_pdf_is_classified_from_single_resolution_ocr(self):
         source = fitz.open()
         page = source.new_page(width=595, height=842)
         page.insert_text(
@@ -240,6 +390,7 @@ class TestMobileApiDocumentWorkflow(unittest.TestCase):
             "placa": "ABC123",
             "fecha_solicitud": "01/03/2026",
             "ubicacion": "",
+            "nit_empresa": "900111222",
         }
         blocks = [
             {
@@ -352,6 +503,7 @@ class TestMobileApiDocumentWorkflow(unittest.TestCase):
             "placa": "ABC123",
             "fecha_solicitud": "01/03/2026",
             "ubicacion": "",
+            "nit_empresa": "900111222",
         }
         upload = UploadFile(file=io.BytesIO(b"%PDF-document"), filename="expediente.pdf")
         with (
@@ -372,9 +524,25 @@ class TestMobileApiDocumentWorkflow(unittest.TestCase):
                     "paginas": 1,
                     "paginas_ocr": 0,
                     "clasificacion_final": "Desistimiento",
+                    "datos_extraidos": {
+                        "nit": "999888777",
+                        "propietario": "Ana Pérez",
+                        "fecha_resolucion": "2026-04-01",
+                    },
                 },
             ),
-            patch.object(main, "guardar_expediente_sheets") as save_case,
+            patch.object(
+                main,
+                "guardar_expediente_sheets",
+                return_value={
+                    "expediente": {
+                        "caso": "Desistimiento",
+                        "propietario": "Ana Pérez",
+                        "fecha_resolucion": "2026-04-01",
+                    },
+                    "campos_no_guardados": [],
+                },
+            ) as save_case,
         ):
             result = main.subir_pdf_expediente(
                 "RAD-2026-010",
@@ -389,11 +557,20 @@ class TestMobileApiDocumentWorkflow(unittest.TestCase):
                 "fecha_solicitud": "2026-03-01",
                 "placa": "ABC123",
                 "caso": "Desistimiento",
+                "propietario": "Ana Pérez",
+                "fecha_resolucion": "2026-04-01",
             },
             radicado_existente="RAD-2026-010",
+            ignorar_columnas_faltantes=True,
         )
         self.assertEqual(result["clasificacion_final"], "Desistimiento")
         self.assertTrue(result["clasificacion_actualizada"])
+        self.assertEqual(
+            result["campos_ocr_guardados"],
+            ["propietario", "fecha_resolucion", "caso"],
+        )
+        self.assertEqual(result["campos_ocr_pendientes"], [])
+        self.assertEqual(result["datos_extraidos"]["nit"], "999888777")
 
     def test_upload_does_not_overwrite_a_confirmed_classification(self):
         case = {

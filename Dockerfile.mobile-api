@@ -42,6 +42,7 @@ RUN pip install --upgrade pip \
 
 COPY --chown=app:app mobile_api ./mobile_api
 COPY --chown=app:app document_rules.py ./
+COPY --chown=app:app document_extraction.py ./
 USER app
 EXPOSE 10000
 

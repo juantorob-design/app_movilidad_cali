@@ -12,7 +12,7 @@ services:
       - key: SISTEMA_GOOGLE_TOKEN_FILE
         value: /etc/secrets/token.json
       - key: SISTEMA_GOOGLE_WEB_CLIENT_ID
-        sync: false
+        value: 1019857870350-ccrqd53kcl0c6k799f0om2p5fnloviij.apps.googleusercontent.com
       - key: SISTEMA_WEB_OWNER_EMAIL
         sync: false
       - key: SISTEMA_SPREADSHEET_ID

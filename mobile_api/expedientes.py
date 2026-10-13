@@ -355,6 +355,7 @@ def _write_sheet_cells(
 def guardar_expediente_sheets(
     expediente: dict[str, Any],
     radicado_existente: str | None = None,
+    ignorar_columnas_faltantes: bool = False,
 ) -> dict[str, Any]:
     """Create a case or patch an existing row without modifying unrelated columns."""
     from datetime import date
@@ -422,6 +423,7 @@ def guardar_expediente_sheets(
         raise FileExistsError("Ya existe un expediente con ese radicado padre.")
 
     mapped_positions: dict[str, list[int]] = {}
+    campos_no_guardados = []
     for field in data:
         matched_positions = [
             index
@@ -429,10 +431,18 @@ def guardar_expediente_sheets(
             for index in positions.get(normalizar_campo(column), [])
         ]
         if not matched_positions:
+            if ignorar_columnas_faltantes and field not in {
+                "radicado_padre",
+                "fecha_solicitud",
+                "placa",
+            }:
+                campos_no_guardados.append(field)
+                continue
             raise RuntimeError(
                 f"La pestaña operacional no contiene una columna para «{field}»."
             )
         mapped_positions[field] = matched_positions
+    data = {field: value for field, value in data.items() if field in mapped_positions}
 
     if matching_rows:
         row_number = matching_rows[0]
@@ -465,7 +475,10 @@ def guardar_expediente_sheets(
             [row],
             append=True,
         )
-    return {"radicado_padre": radicado, "expediente": data}
+    result_payload = {"radicado_padre": radicado, "expediente": data}
+    if campos_no_guardados:
+        result_payload["campos_no_guardados"] = campos_no_guardados
+    return result_payload
 
 
 def normalizar_criterio(criterio: str | None) -> str:

@@ -30,6 +30,12 @@ def normalizar_errores_ocr(texto):
     )
     for patron, reemplazo in reemplazos:
         texto = re.sub(patron, reemplazo, texto, flags=re.IGNORECASE)
+    texto = re.sub(
+        r"(notificación)(personal|poraviso|porpublicaci[oó]n)",
+        r"\1 \2",
+        texto,
+        flags=re.IGNORECASE,
+    )
     return texto
 
 

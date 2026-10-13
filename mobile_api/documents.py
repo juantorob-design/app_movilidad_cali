@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import re
+import threading
+from collections import OrderedDict
 from functools import lru_cache
+from typing import Callable
 
 import fitz
+import onnxruntime
 from PIL import Image, ImageOps, UnidentifiedImageError
 from PyPDF2 import PdfReader, PdfWriter
 from PyPDF2.errors import PdfReadError
 from rapidocr_onnxruntime import RapidOCR
 
+from document_extraction import extraer_datos_desde_texto
 from document_rules import (
     clasificar_tipo_caso,
     clasificar_tipo_documento,
@@ -21,6 +27,9 @@ from document_rules import (
 
 MAX_PDF_PAGES = 300
 MAX_IMAGE_PIXELS = 25_000_000
+OCR_RENDER_SCALE = 1.2
+OCR_CACHE_MAX_PAGES = 4096
+BLANK_PAGE_DARK_PIXEL_RATIO = 0.005
 DOCUMENT_TYPES = {
     "Expediente completo",
     "Solicitud",
@@ -44,6 +53,9 @@ DOCUMENT_TYPES = {
     "Desistimiento",
     "Otro",
 }
+_OCR_CACHE: OrderedDict[tuple[str, int, float], str] = OrderedDict()
+_OCR_CACHE_LOCK = threading.Lock()
+_OCR_ENGINE_LOCK = threading.Lock()
 
 
 def convertir_imagen_a_pdf(image_bytes: bytes) -> bytes:
@@ -109,18 +121,68 @@ def obtener_tamano_pdf(pdf_bytes: bytes | None) -> int:
 
 @lru_cache(maxsize=1)
 def _ocr_engine() -> RapidOCR:
-    return RapidOCR()
+    providers = onnxruntime.get_available_providers()
+    configuration = {
+        "use_cuda": "CUDAExecutionProvider" in providers,
+        "use_dml": "DmlExecutionProvider" in providers,
+    }
+    try:
+        return RapidOCR(**configuration)
+    except (TypeError, RuntimeError, ValueError):
+        if configuration["use_cuda"] or configuration["use_dml"]:
+            return RapidOCR(use_cuda=False, use_dml=False)
+        raise
 
 
-def _ocr_page(ocr_engine: RapidOCR, pixmap: fitz.Pixmap) -> str:
-    result, _ = ocr_engine(pixmap.tobytes("png"))
-    if not result:
-        return ""
-    return " ".join(
-        str(item[1]).strip()
-        for item in result
-        if len(item) > 1 and str(item[1]).strip()
+def _pagina_en_blanco(pixmap: fitz.Pixmap) -> bool:
+    samples = pixmap.samples
+    if not samples:
+        return True
+    channels = pixmap.n
+    total_pixels = len(samples) // channels
+    stride = max(channels * 4, 1)
+    dark_pixels = sum(
+        1
+        for offset in range(0, len(samples), stride)
+        if min(samples[offset:offset + 3]) < 245
     )
+    return total_pixels == 0 or (
+        dark_pixels / max(total_pixels // 4, 1)
+    ) < BLANK_PAGE_DARK_PIXEL_RATIO
+
+
+def _ocr_page(
+    ocr_engine: RapidOCR,
+    pixmap: fitz.Pixmap,
+    cache_key: tuple[str, int, float],
+) -> str:
+    with _OCR_CACHE_LOCK:
+        cached = _OCR_CACHE.get(cache_key)
+        if cached is not None:
+            _OCR_CACHE.move_to_end(cache_key)
+            return cached
+
+    with _OCR_ENGINE_LOCK:
+        with _OCR_CACHE_LOCK:
+            cached = _OCR_CACHE.get(cache_key)
+            if cached is not None:
+                _OCR_CACHE.move_to_end(cache_key)
+                return cached
+        result, _ = ocr_engine(pixmap.tobytes("png"))
+    if not result:
+        text = ""
+    else:
+        text = " ".join(
+            str(item[1]).strip()
+            for item in result
+            if len(item) > 1 and str(item[1]).strip()
+        )
+    with _OCR_CACHE_LOCK:
+        _OCR_CACHE[cache_key] = text
+        _OCR_CACHE.move_to_end(cache_key)
+        while len(_OCR_CACHE) > OCR_CACHE_MAX_PAGES:
+            _OCR_CACHE.popitem(last=False)
+    return text
 
 
 def _clasificar_caso_por_bloques(groups: list[dict]) -> str:
@@ -170,6 +232,7 @@ def _clasificar_caso_por_bloques(groups: list[dict]) -> str:
 def separar_pdf(
     pdf_bytes: bytes,
     tipo_fallback: str = "Otro",
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> dict:
     """Classify each page from embedded text/OCR and return contiguous PDF blocks."""
     valid, detail = validar_pdf(pdf_bytes)
@@ -181,26 +244,29 @@ def separar_pdf(
     groups: list[dict] = []
     current_type = "Otro" if fallback == "Expediente completo" else fallback
     ocr_pages = 0
+    pdf_digest = hashlib.sha256(pdf_bytes).hexdigest()
+    all_texts = []
     try:
         for page_index, source_page in enumerate(reader.pages):
             text = " ".join((source_page.extract_text() or "").split())
-            if len(text) < 40:
-                pixmap = visual_document.load_page(page_index).get_pixmap(
-                    matrix=fitz.Matrix(1.25, 1.25),
+            page = visual_document.load_page(page_index)
+            preview = page.get_pixmap(
+                matrix=fitz.Matrix(0.35, 0.35),
+                alpha=False,
+            )
+            if not _pagina_en_blanco(preview):
+                pixmap = page.get_pixmap(
+                    matrix=fitz.Matrix(OCR_RENDER_SCALE, OCR_RENDER_SCALE),
                     alpha=False,
                 )
-                text = " ".join(part for part in (text, _ocr_page(_ocr_engine(), pixmap)) if part)
+                ocr_text = _ocr_page(
+                    _ocr_engine(),
+                    pixmap,
+                    (pdf_digest, page_index, OCR_RENDER_SCALE),
+                )
+                text = " ".join(part for part in (text, ocr_text) if part)
                 ocr_pages += 1
-                if clasificar_tipo_documento(text, "") in ("", "Otro"):
-                    high_resolution = visual_document.load_page(page_index).get_pixmap(
-                        matrix=fitz.Matrix(2, 2),
-                        alpha=False,
-                    )
-                    text = " ".join(
-                        part
-                        for part in (text, _ocr_page(_ocr_engine(), high_resolution))
-                        if part
-                    )
+            all_texts.append(text)
 
             detected = clasificar_tipo_documento(text, "")
             if detected and detected != "Expediente completo":
@@ -220,6 +286,8 @@ def separar_pdf(
             groups[-1]["pages"].append(source_page)
             groups[-1]["source_pages"].append(page_index + 1)
             groups[-1]["texts"].append(text)
+            if progress_callback:
+                progress_callback(page_index + 1, len(reader.pages))
     finally:
         visual_document.close()
 
@@ -243,4 +311,5 @@ def separar_pdf(
         "paginas": len(reader.pages),
         "paginas_ocr": ocr_pages,
         "clasificacion_final": classification or "",
+        "datos_extraidos": extraer_datos_desde_texto(" ".join(all_texts)),
     }

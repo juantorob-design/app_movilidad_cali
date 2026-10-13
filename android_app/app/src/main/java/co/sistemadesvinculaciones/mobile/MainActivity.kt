@@ -181,6 +181,14 @@ class MainActivity : ComponentActivity() {
             .callTimeout(35, TimeUnit.SECONDS)
             .build()
     }
+    private val apiRequestClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(5, TimeUnit.MINUTES)
+            .readTimeout(15, TimeUnit.MINUTES)
+            .callTimeout(20, TimeUnit.MINUTES)
+            .build()
+    }
     private var appState by mutableStateOf<AppState>(AppState.Login)
     private var userEmail by mutableStateOf("")
     private var userRole by mutableStateOf("")
@@ -499,7 +507,7 @@ class MainActivity : ComponentActivity() {
                 .header("Authorization", "Bearer $idToken")
                 .get()
                 .build()
-            OkHttpClient().newCall(request).execute().use { response ->
+            apiRequestClient.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     val detail = runCatching {
@@ -522,7 +530,7 @@ class MainActivity : ComponentActivity() {
                 .header("Authorization", "Bearer $authToken")
                 .get()
                 .build()
-            OkHttpClient().newCall(request).execute().use { response ->
+            apiRequestClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     val body = response.body?.string().orEmpty()
                     val detail = runCatching {
@@ -577,7 +585,7 @@ class MainActivity : ComponentActivity() {
             )
             else -> throw IllegalArgumentException("Método no admitido.")
         }
-        OkHttpClient().newCall(requestBuilder.build()).execute().use { response ->
+        apiRequestClient.newCall(requestBuilder.build()).execute().use { response ->
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 throw IOException(apiError(body, response.code))
@@ -776,7 +784,7 @@ class MainActivity : ComponentActivity() {
                 .header("Authorization", "Bearer $authToken")
                 .get()
                 .build()
-            OkHttpClient().newCall(request).execute().use { response ->
+            apiRequestClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     throw IOException("No se encontró el expediente (${response.code}).")
                 }
@@ -805,7 +813,7 @@ class MainActivity : ComponentActivity() {
                         .header("Authorization", "Bearer $authToken")
                         .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                         .build()
-                    OkHttpClient().newCall(request).execute().use { response ->
+                    apiRequestClient.newCall(request).execute().use { response ->
                         val responseBody = response.body?.string().orEmpty()
                         if (!response.isSuccessful) {
                             throw IOException(apiError(responseBody, response.code))
@@ -893,7 +901,7 @@ class MainActivity : ComponentActivity() {
                             ),
                         )
                         .build()
-                    OkHttpClient().newCall(request).execute().use { response ->
+                    apiRequestClient.newCall(request).execute().use { response ->
                         val responseBody = response.body?.string().orEmpty()
                         if (!response.isSuccessful) {
                             throw IOException(apiError(responseBody, response.code))
@@ -943,7 +951,7 @@ class MainActivity : ComponentActivity() {
                 message = "Guardando complemento pendiente para la placa $unlinkedPlate..."
             }
             try {
-                val result = withContext(Dispatchers.IO) {
+                val acceptedJob = withContext(Dispatchers.IO) {
                     val filename = displayName(uri).ifBlank { "documento" }
                     val contentType = documentContentType(uri, filename)
                     val bytes = readDocument(uri)
@@ -961,12 +969,12 @@ class MainActivity : ComponentActivity() {
                     val request = Request.Builder()
                         .url(
                             "${BuildConfig.API_BASE_URL.trimEnd('/')}/api/v1/expedientes/" +
-                                "${Uri.encode(radicado)}/upload-pdf"
+                                "${Uri.encode(radicado)}/upload-pdf/jobs"
                         )
                         .header("Authorization", "Bearer $authToken")
                         .post(requestBody)
                         .build()
-                    OkHttpClient().newCall(request).execute().use { response ->
+                    apiRequestClient.newCall(request).execute().use { response ->
                         val body = response.body?.string().orEmpty()
                         if (!response.isSuccessful) {
                             throw IOException(apiError(body, response.code))
@@ -974,6 +982,7 @@ class MainActivity : ComponentActivity() {
                         JSONObject(body)
                     }
                 }
+                val result = awaitUploadJob(acceptedJob)
                 val blocks = result.optJSONArray("bloques") ?: JSONArray()
                 uploadSummary = "Documento procesado: ${result.optInt("paginas")} páginas, " +
                     "${blocks.length()} bloques; OCR en ${result.optInt("paginas_ocr")} páginas."
@@ -988,12 +997,30 @@ class MainActivity : ComponentActivity() {
                 if (finalClassification.isNotBlank()) {
                     uploadSummary += " Clasificación final registrada: $finalClassification."
                 }
+                val savedOcrFields = result.optJSONArray("campos_ocr_guardados") ?: JSONArray()
+                if (savedOcrFields.length() > 0) {
+                    uploadSummary += " Campos completados automáticamente: " +
+                        "${savedOcrFields.length()}."
+                }
+                val pendingOcrFields = result.optJSONArray("campos_ocr_pendientes") ?: JSONArray()
+                if (pendingOcrFields.length() > 0) {
+                    val pendingNames = (0 until pendingOcrFields.length())
+                        .joinToString { pendingOcrFields.optString(it) }
+                    uploadSummary += " Campos OCR pendientes de guardar: $pendingNames."
+                }
                 val warning = result.optString("advertencia")
                 if (warning.isNotBlank()) {
                     uploadSummary += " $warning"
                 }
                 if (unlinkedPlate == null) {
-                    loadChecklist(radicado)
+                    try {
+                        loadChecklist(radicado)
+                        selectedCaseData = JSONObject(fetchCaseDetails(radicado))
+                            .optJSONObject("expediente")
+                    } catch (error: Exception) {
+                        uploadSummary += " No se pudo actualizar la vista del expediente: " +
+                            (error.message ?: "error de consulta.")
+                    }
                 } else {
                     uploadSummary += " Se guardó temporalmente en Pendientes/Por_vincular/$unlinkedPlate."
                     message = uploadSummary
@@ -1007,6 +1034,57 @@ class MainActivity : ComponentActivity() {
                 busy = false
             }
         }
+    }
+
+    private suspend fun awaitUploadJob(accepted: JSONObject): JSONObject {
+        val jobId = accepted.optString("job_id")
+        if (jobId.isBlank()) return accepted
+        val deadline = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(20)
+        while (System.currentTimeMillis() < deadline) {
+            delay(1500)
+            val status = withContext(Dispatchers.IO) {
+                val request = Request.Builder()
+                    .url(
+                        "${BuildConfig.API_BASE_URL.trimEnd('/')}/api/v1/expedientes/" +
+                            "upload-jobs/${Uri.encode(jobId)}"
+                    )
+                    .header("Authorization", "******")
+                    .get()
+                    .build()
+                apiRequestClient.newCall(request).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        throw IOException(apiError(body, response.code))
+                    }
+                    JSONObject(body)
+                }
+            }
+            when (status.optString("estado")) {
+                "completado" -> {
+                    return status.optJSONObject("resultado")
+                        ?: throw IOException("El trabajo terminó sin devolver resultados.")
+                }
+                "error" -> throw IOException(
+                    status.optString("error").ifBlank {
+                        "No se pudo procesar el documento."
+                    },
+                )
+                else -> {
+                    val progress = status.optJSONObject("progreso")
+                    val processedPages = progress?.optInt("paginas_procesadas") ?: 0
+                    val totalPages = progress?.optInt("paginas_totales") ?: 0
+                    uploadSummary = if (totalPages > 0) {
+                        "OCR y separación documental: $processedPages de " +
+                            "$totalPages páginas procesadas..."
+                    } else {
+                        "El servidor está preparando el documento para OCR y separación..."
+                    }
+                }
+            }
+        }
+        throw IOException(
+            "El procesamiento superó los 20 minutos. Consulta el estado del expediente antes de volver a cargar.",
+        )
     }
 
     private fun refreshChecklist() {
@@ -1035,7 +1113,7 @@ class MainActivity : ComponentActivity() {
                 .header("Authorization", "Bearer $authToken")
                 .get()
                 .build()
-            OkHttpClient().newCall(request).execute().use { response ->
+            apiRequestClient.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     throw IOException(apiError(body, response.code))
@@ -1086,7 +1164,7 @@ class MainActivity : ComponentActivity() {
                         .header("Authorization", "Bearer $authToken")
                         .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                         .build()
-                    OkHttpClient().newCall(request).execute().use { response ->
+                    apiRequestClient.newCall(request).execute().use { response ->
                         val body = response.body?.string().orEmpty()
                         if (!response.isSuccessful) {
                             throw IOException(apiError(body, response.code))

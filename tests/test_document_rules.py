@@ -1,6 +1,7 @@
 import unittest
 
 from app_6 import extraer_datos_pdf
+from document_extraction import extraer_datos_desde_texto
 
 from document_rules import (
     clasificar_tipo_caso,
@@ -13,6 +14,21 @@ from document_rules import (
 
 
 class TestDocumentRules(unittest.TestCase):
+    def test_shared_extractor_returns_mobile_and_desktop_case_fields(self):
+        text = (
+            "Radicado padre: 202541520140874961. Placa: ABC-123. "
+            "Fecha de solicitud: 11/06/2025. NIT: 8050135165."
+        )
+        expected = {
+            "radicado_padre": "202541520140874961",
+            "placa": "ABC123",
+            "fecha_solicitud": "2025-06-11",
+            "nit": "8050135165",
+        }
+
+        self.assertEqual(extraer_datos_desde_texto(text), expected)
+        self.assertEqual(extraer_datos_pdf(b"", texto=text), expected)
+
     def test_extraer_datos_descarta_etiqueta_ocr_contaminada(self):
         datos = extraer_datos_pdf(
             b"",
@@ -137,6 +153,15 @@ class TestDocumentRules(unittest.TestCase):
                 "Otro",
             ),
             "Notificación",
+        )
+
+    def test_compact_ocr_personal_notification_header_is_classified(self):
+        self.assertEqual(
+            clasificar_tipo_documento(
+                "NOTIFICACIONPERSONALexpedientededesvinculacionABC123",
+                "Otro",
+            ),
+            "Notificación personal",
         )
 
     def test_classifies_subject_after_letter_metadata(self):
