@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
+from fastapi.testclient import TestClient
 from google.auth.exceptions import GoogleAuthError
 
 from mobile_api.auth import MobileAuthenticationError, validar_identidad_google
@@ -10,6 +11,30 @@ from mobile_api.main import app, get_current_user
 
 
 class TestMobileGoogleAuthentication(unittest.TestCase):
+    def test_current_user_endpoint_preserves_boolean_download_permissions(self):
+        user = {
+            "email": "owner@gmail.com",
+            "name": "Owner",
+            "role": "Super Administrador",
+            "status": "Activo",
+            "download_allowed": False,
+            "download_requested": False,
+        }
+        previous_override = app.dependency_overrides.get(get_current_user)
+        app.dependency_overrides[get_current_user] = lambda: user
+        try:
+            response = TestClient(app).get("/api/v1/me")
+        finally:
+            if previous_override is None:
+                app.dependency_overrides.pop(get_current_user, None)
+            else:
+                app.dependency_overrides[get_current_user] = previous_override
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), user)
+        self.assertIs(response.json()["download_allowed"], False)
+        self.assertIs(response.json()["download_requested"], False)
+
     @patch("mobile_api.auth.id_token.verify_oauth2_token")
     def test_accepts_verified_google_identity_for_central_profile_authorization(self, verify_token):
         verify_token.return_value = {

@@ -48,7 +48,7 @@ def get_current_user(
         HTTPAuthorizationCredentials | None,
         Depends(bearer_scheme),
     ],
-) -> dict[str, str]:
+) -> dict[str, str | bool]:
     """Dependency: obtiene el usuario autenticado."""
     if credentials is None or credentials.scheme.casefold() != "bearer":
         raise HTTPException(
@@ -157,8 +157,8 @@ def _find_case(records: dict[str, dict], radicado: str) -> dict | None:
 
 @app.get("/api/v1/me")
 def current_user_endpoint(
-    user: Annotated[dict[str, str], Depends(get_current_user)],
-) -> dict[str, str]:
+    user: Annotated[dict[str, str | bool], Depends(get_current_user)],
+) -> dict[str, str | bool]:
     return user
 
 
