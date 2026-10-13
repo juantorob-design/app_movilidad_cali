@@ -8,6 +8,33 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN groupadd --gid 10002 app \
     && useradd --uid 10002 --gid app --create-home --shell /usr/sbin/nologin app
 
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y \
+        libgl1 \
+        libglib2.0-0 \
+        libice6 \
+        libsm6 \
+        libx11-6 \
+        libx11-xcb1 \
+        libxcb-cursor0 \
+        libxcb-icccm4 \
+        libxcb-image0 \
+        libxcb-keysyms1 \
+        libxcb-randr0 \
+        libxcb-render-util0 \
+        libxcb-render0 \
+        libxcb-shape0 \
+        libxcb-shm0 \
+        libxcb-sync1 \
+        libxcb-xfixes0 \
+        libxcb-xinerama0 \
+        libxcb-xkb1 \
+        libxext6 \
+        libxkbcommon0 \
+        libxkbcommon-x11-0 \
+        libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY requirements-mobile-api.txt ./
 RUN pip install --upgrade pip \
