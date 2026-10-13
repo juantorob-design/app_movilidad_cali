@@ -76,6 +76,121 @@ class TestDocumentRules(unittest.TestCase):
             "Oficio de citación",
         )
 
+    def test_classifies_a_resolution_that_decides_an_appeal_separately(self):
+        self.assertEqual(
+            clasificar_tipo_documento(
+                "Resolución No. 4152.010.21.0.1894 de 2025. "
+                "Por el cual se resuelve un recurso de reposición.",
+                "Otro",
+            ),
+            "Resolución del recurso",
+        )
+
+    def test_classifies_request_from_its_reference_even_if_the_heading_is_ocr_noisy(self):
+        self.assertEqual(
+            clasificar_tipo_documento(
+                "Santiago de Cali. REFERENCIA: SOLICITUD DESVINCULACION "
+                "ADMINISTRATIVA DE VEHICULO.",
+                "Otro",
+            ),
+            "Solicitud",
+        )
+
+    def test_classifies_main_resolution_even_when_its_body_mentions_notification(self):
+        texto = (
+            "Resolución No. 4152.01. Por la cual se resuelve la solicitud de "
+            "desvinculación administrativa. "
+            + "En cumplimiento de la normativa vigente y de las actuaciones "
+            "administrativas previas, se revisaron los documentos aportados. " * 8
+            + "La notificación personal del acto se surtirá después."
+        )
+        self.assertEqual(
+            clasificar_tipo_documento(texto, "Otro"),
+            "Resolución",
+        )
+
+    def test_citation_for_personal_notification_is_not_the_notification_itself(self):
+        texto = (
+            "Asunto: Citación para notificación personal. "
+            "Sírvase comparecer para notificarse del contenido de la resolución."
+        )
+        self.assertEqual(
+            clasificar_tipo_documento(texto, "Otro"),
+            "Oficio de citación",
+        )
+
+    def test_notification_takes_priority_over_the_resolution_it_references(self):
+        texto = (
+            "Asunto: Notificación personal de acto administrativo. "
+            "Se notifica personalmente la resolución que resuelve un recurso "
+            "de reposición."
+        )
+        self.assertEqual(
+            clasificar_tipo_documento(texto, "Otro"),
+            "Notificación personal",
+        )
+
+    def test_compact_ocr_notification_subject_is_still_classified(self):
+        self.assertEqual(
+            clasificar_tipo_documento(
+                "ASUNTO:NOTIFICACIONDEACTOADMINISTRATIVOQUERESUELVERECURSODEREPOSICION",
+                "Otro",
+            ),
+            "Notificación",
+        )
+
+    def test_classifies_subject_after_letter_metadata(self):
+        texto = (
+            "Al contestar por favor cite estos datos: Radicado No. 202541520140874961 "
+            "Fecha 11-06-2025 TRD: 4152.014.13.1.2183.087496 Rad. Padre: 12345 "
+            "Representante legal. Asunto: Notificación personal de acto administrativo."
+        )
+        self.assertEqual(
+            clasificar_tipo_documento(texto, "Otro"),
+            "Notificación personal",
+        )
+
+    def test_notice_by_publication_is_not_misclassified_by_its_personal_notice_reference(self):
+        texto = (
+            "Radicado No. 12345. ASUNTO: Notificación por aviso - la "
+            "resolución No. 456. Al no haberse surtido la notificación personal "
+            "dentro de los términos, se publica este aviso."
+        )
+        self.assertEqual(
+            clasificar_tipo_documento(texto, "Otro"),
+            "Notificación por aviso",
+        )
+
+    def test_contestation_of_a_resolution_is_classified_as_the_appeal(self):
+        texto = (
+            "Radicado No. 12345. Fecha 11-06-2025. REF. CONTESTACION "
+            "RESOLUCION No. 4152.010.21.0.00794."
+        )
+        self.assertEqual(
+            clasificar_tipo_documento(texto, "Otro"),
+            "Recurso",
+        )
+
+    def test_compact_execution_certificate_takes_priority_over_its_resolution_reference(self):
+        texto = (
+            "42 CONSTANCIA DEEJECUTORIA. Hace constar que mediante Resolución "
+            "No. 4152.010 se resolvió la solicitud de desvinculación."
+        )
+        self.assertEqual(
+            clasificar_tipo_documento(texto, "Otro"),
+            "Constancia de ejecutoria",
+        )
+
+    def test_compact_ocr_titles_for_supporting_documents_remain_other(self):
+        for texto in (
+            "CONTRATODEVINCULACIONDEVEHICULO",
+            "IDENTIFICACIONPERSONAL CEDULA DE CIUDADANIA",
+            "AUTORIZACIONDETRAMITES",
+            "REPORTE DE ESTADO DE CUENTAS",
+        ):
+            with self.subTest(texto=texto):
+                self.assertEqual(clasificar_tipo_documento(texto, "Solicitud"), "Otro")
+
     def test_references_to_a_resolution_do_not_classify_a_contract_as_a_resolution(self):
         self.assertEqual(
             clasificar_tipo_documento(

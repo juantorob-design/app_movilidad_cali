@@ -20,6 +20,7 @@ def normalizar_errores_ocr(texto):
         (r"direcci.n", "dirección"),
         (r"\bveh[ií]cul[o0]\b", "vehículo"),
         (r"resoluci[oó6]n", "resolución"),
+        (r"\bresoluc[1i]on\b", "resolución"),
         (r"notificaci[oó6]n", "notificación"),
         (r"ejecutori[aá6]|ejecutor[ií]a", "ejecutoria"),
         (r"radicad[oó6]\s*no\b|radicadono\b", "radicado no"),
@@ -201,17 +202,120 @@ def normalizar_tipo_documental(valor):
 
 def clasificar_tipo_documento(texto, tipo_fallback):
     evidencia = normalizar_errores_ocr(texto).lower()
-    if re.search(r"\bdesistim\w*\b|\bdeclara(?:r)?\s+el\s+desistimiento\b", evidencia):
+    encabezado = evidencia[:180]
+    asunto = re.search(r"\basunto\s*[:\-]?\s*", evidencia[:1200])
+    referencia = re.search(r"\b(?:referencia|ref)\s*[:.\-]?\s*", evidencia[:1200])
+    identidad_documento = evidencia[:120]
+    if asunto:
+        texto_asunto = evidencia[asunto.start():asunto.start() + 300]
+        encabezado += " " + texto_asunto
+        identidad_documento += " " + texto_asunto
+    if referencia:
+        texto_referencia = evidencia[referencia.start():referencia.start() + 220]
+        encabezado += " " + texto_referencia
+        identidad_documento += " " + texto_referencia
+    titulo = evidencia[:220]
+    if re.search(r"\bdesistim\w*\b|\bdeclara(?:r)?\s+el\s+desistimiento\b", encabezado):
         return "Desistimiento"
-    encabezado = evidencia[:220]
+
     if re.search(
-        r"\bcontrato\s+de\s+vinculaci[oó]n\b|"
-        r"\bcl[aá]usulas?\b|"
-        r"\btarjeta\s+de\s+operaci[oó]n\b|"
-        r"\blicencia\s+de\s+tr[aá]nsito\b",
+        r"\bcitaci[oó]n\s+(?:del|de la)\s+recurso\b",
+        identidad_documento,
+    ):
+        return "Citación del recurso"
+    if re.search(
+        r"\bcitaci[oó]n\b.{0,70}\bnotificaci[oó]n\s+personal\b|"
+        r"\bcitaci[oó]n\s+para\s+notificaci[oó]n\b",
+        identidad_documento,
+    ):
+        return "Oficio de citación"
+    if re.search(
+        r"\bnotificaci[oó]n\s+(?:por\s+)?aviso\b|"
+        r"\baviso\s+de\s+notificaci[oó]n\b",
+        identidad_documento,
+    ):
+        return "Notificación por aviso"
+    if re.search(
+        r"\bnotificaci[oó]n\s+(?:por\s+)?publicaci[oó]n\s+web\b|"
+        r"\bpublicaci[oó]n\s+web\b",
+        identidad_documento,
+    ):
+        return "Notificación por publicación web"
+    if re.search(
+        r"\bnotificaci[oó]n\s+(?:del|de la)\s+recurso\b",
+        identidad_documento,
+    ):
+        return "Notificación del recurso"
+    if re.search(
+        r"\bnotificaci[oó]n\s+personal\b|"
+        r"\bnotificarle\s+personalmente\b|"
+        r"\bpersonalmente\s+notificado\b",
+        identidad_documento,
+    ):
+        return "Notificación personal"
+    if re.search(
+        r"\basunto\s*[:\-]?\s*notificaci[oó]n|"
+        r"\bcertificado\s*de\s*comunicaci[oó]n\s*electr[oó]nica\b",
         encabezado,
     ):
+        return "Notificación"
+    if re.search(
+        r"\bpor\s+(?:el|la)\s+cual\b.{0,100}\bresuelve\b.{0,60}"
+        r"\b(?:un\s+)?recurso\b|"
+        r"\bresoluci[oó]n\s+(?:del|de)\s+recurso\b|"
+        r"\bresuelve\s+(?:el|un)\s+recurso\b",
+        encabezado,
+    ):
+        return "Resolución del recurso"
+    if re.search(
+        r"\bcontestaci[oó]n\b.{0,50}\bresoluci[oó]n\b",
+        identidad_documento,
+    ):
+        return "Recurso"
+    if re.search(
+        r"\bconstancia\s*(?:de\s*)?(?:ejecutoria|firmeza)\b",
+        encabezado,
+    ):
+        return "Constancia de ejecutoria"
+    if re.search(
+        r"\bresoluci[oó]n\s*(?:n(?:ro|o|°|º)?\.?\s*)?"
+        r"[\w./-]*.{0,140}\b(?:por\s+(?:el|la)\s+cual|resuelve)\b"
+        r".{0,100}\b(?:solicitud|desvinculaci[oó]n)\b",
+        encabezado,
+    ):
+        return "Resolución"
+
+    if re.search(
+        r"\bremisi[oó]n\s+(?:a|al)\s+registro\b|"
+        r"\bremitir\s+al\s+registro\b",
+        encabezado,
+    ):
+        return "Remisión a registro"
+    if re.search(
+        r"\bconsulta\s+(?:de\s+)?(?:verificaci[oó]n\s+de\s+)?"
+        r"(?:propiedad|qx)\b|"
+        r"\bverificaci[oó]n\s+(?:de\s+)?(?:propiedad|qx)\b",
+        encabezado,
+    ):
+        return "Consulta QX"
+    if re.search(r"\brequerimient[oó]\b|\brequerido\s+para\b", encabezado):
+        return "Requerimiento"
+
+    if re.search(
+        r"\bcontrat.{0,18}vinculaci[oó]n|"
+        r"\bcl[aá]usulas?\b|"
+        r"\btarjeta\s*de\s*operaci[oó]n\b|"
+        r"\blicencia\s*de\s*tr[aá]nsito\b|"
+        r"\bidentificaci[oó]n\s*personal\b|"
+        r"\bc[eé]dula\s*de\s*ciudadan[ií]a\b|"
+        r"\bautorizaci[oó]n\s*de\s*tr[aá]mites\b|"
+        r"\breporte\s*de\s*estado\s*de\s*cuentas\b|"
+        r"\bcertificado\s*de\s*existencia\s*y\s*representaci[oó]n\s*legal\b|"
+        r"\bc[aá]mara\s*de\s*comercio\b",
+        titulo,
+    ):
         return "Otro"
+
     puntuaciones = {
         "Desistimiento": [
             (9, r"\bdesistimiento\b|declara(?:r)?\s+el\s+desistimiento"),
@@ -239,14 +343,14 @@ def clasificar_tipo_documento(texto, tipo_fallback):
         "Remisión a registro": [(12, r"remisi[oó]n\s+(?:a|al)\s+registro|remision\s+(?:a|al)\s+registro"), (8, r"registro\s+automotor|remitir\s+al\s+registro")],
         "Recurso": [(10, r"recurso\s+de\s+(?:reposici[oó]n|apelaci[oó]n)"), (8, r"interpuso\s+(?:un\s+)?recurso|present[oó]\s+(?:un\s+)?recurso"), (3, r"\brecurso\b|impugn")],
         "Consulta QX": [(12, r"consulta\s+de\s+verificaci[oó]n\s+de\s+propiedad|consulta\s+de\s+propiedad|verificaci[oó]n\s+de\s+propiedad|consulta\s+qx|verificaci[oó]n\s+qx")],
-        "Solicitud": [(10, r"derecho\s+de\s+petici[oó]n|derecho\s+de\s+peticion|solicitud\s+de\s+desvinculaci[oó]n"), (8, r"\bsolicito\b.*\bdesvincul"), (3, r"\bsolicitud\b|\bpetici[oó]n\b|\bpeticion\b")],
+        "Solicitud": [(10, r"derecho\s+de\s+petici[oó]n|derecho\s+de\s+peticion|solicitud\s+(?:de\s+)?desvinculaci[oó]n"), (8, r"\bsolicito\b.*\bdesvincul"), (3, r"\bsolicitud\b|\bpetici[oó]n\b|\bpeticion\b")],
     }
     mejor_tipo = None
     mejor_puntaje = 0
     for tipo, reglas in puntuaciones.items():
         puntaje = sum(
             puntos for puntos, patron in reglas
-            if re.search(patron, evidencia, flags=re.IGNORECASE | re.DOTALL)
+            if re.search(patron, encabezado, flags=re.IGNORECASE | re.DOTALL)
         )
         if puntaje > mejor_puntaje:
             mejor_tipo = tipo

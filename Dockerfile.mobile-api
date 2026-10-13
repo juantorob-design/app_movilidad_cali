@@ -1,0 +1,24 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PORT=10000
+
+RUN groupadd --gid 10002 app \
+    && useradd --uid 10002 --gid app --create-home --shell /usr/sbin/nologin app
+
+WORKDIR /app
+COPY requirements-mobile-api.txt ./
+RUN pip install --upgrade pip \
+    && pip install -r requirements-mobile-api.txt
+
+COPY --chown=app:app mobile_api ./mobile_api
+COPY --chown=app:app document_rules.py ./
+USER app
+EXPOSE 10000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.getenv('PORT','10000')+'/health', timeout=3)" || exit 1
+
+CMD ["sh", "-c", "exec python -m uvicorn mobile_api.main:app --host 0.0.0.0 --port \"${PORT:-10000}\" --proxy-headers --forwarded-allow-ips='*'"]

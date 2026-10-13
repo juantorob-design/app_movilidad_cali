@@ -293,6 +293,56 @@ class TestDriveStaging(unittest.TestCase):
             [[1], [3], [4]],
         )
 
+    @unittest.skipIf(app_6.fitz is None, "PyMuPDF is required to test PDF splitting")
+    def test_splitter_keeps_citations_notifications_resource_decisions_and_other_separate(self):
+        source = app_6.fitz.open()
+        citation = source.new_page(width=200, height=200)
+        citation.insert_text(
+            (10, 20),
+            "Asunto: Citacion para notificacion personal. Sirvase comparecer.",
+        )
+        continuation = source.new_page(width=200, height=200)
+        continuation.insert_text(
+            (10, 20),
+            "La resolucion referida debe consultarse en la sede administrativa.",
+        )
+        source.new_page(width=200, height=200)
+        notification = source.new_page(width=200, height=200)
+        notification.insert_text(
+            (10, 20),
+            "Asunto: Notificacion personal de acto administrativo. "
+            "Se notifica la resolucion que resuelve un recurso de reposicion.",
+        )
+        resource_decision = source.new_page(width=200, height=200)
+        resource_decision.insert_text(
+            (10, 20),
+            "Resolucion No. 4152. Por el cual se resuelve un recurso de reposicion.",
+        )
+        supporting_document = source.new_page(width=200, height=200)
+        supporting_document.insert_text(
+            (10, 20),
+            "CONTRATODEVINCULACIONDEVEHICULO",
+        )
+        content = source.tobytes()
+        source.close()
+
+        with patch.object(app_6, "obtener_texto_ocr_pagina", return_value=""):
+            parts = app_6.separar_pdf_completo(content, "Solicitud")
+
+        self.assertEqual(
+            [part["tipo"] for part in parts],
+            [
+                "Oficio de citación",
+                "Notificación personal",
+                "Resolución del recurso",
+                "Otro",
+            ],
+        )
+        self.assertEqual(
+            [part["paginas_por_seccion"] for part in parts],
+            [[1, 2], [4], [5], [6]],
+        )
+
     def test_fragment_type_is_not_overwritten_by_text_from_another_document(self):
         self.assertEqual(
             app_6.tipo_documento_de_parte(

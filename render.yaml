@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: sistema-desvinculaciones-api
+    runtime: docker
+    plan: free
+    region: ohio
+    dockerfilePath: ./Dockerfile.mobile-api
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: false
+    envVars:
+      - key: SISTEMA_GOOGLE_TOKEN_FILE
+        value: /etc/secrets/token.json
+      - key: SISTEMA_GOOGLE_WEB_CLIENT_ID
+        sync: false
+      - key: SISTEMA_WEB_OWNER_EMAIL
+        sync: false
+      - key: SISTEMA_SPREADSHEET_ID
+        sync: false
+      - key: SISTEMA_DRIVE_FOLDER_ID
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false

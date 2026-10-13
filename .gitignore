@@ -5,7 +5,12 @@ __pycache__/
 *.pyc
 token.json
 credentials.json
+client_secret*.json
+*service-account*.json
+*service_account*.json
 database_local.json
+web-data/
+web-secrets/
 ocr_cache.json
 documentos/
 .env
@@ -36,3 +41,9 @@ RESUMEN_EJECUTIVO_1.1.12.md
 *.tmp
 *.bak
 *.cache
+android_app/.gradle/
+android_app/local.properties
+android_app/app/build/
+android_app/*.jks
+android_app/*.keystore
+deploy/pwa/config.js
