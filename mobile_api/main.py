@@ -8,7 +8,12 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, sta
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .auth import MobileAuthenticationError, validar_identidad_google
-from .documents import DOCUMENT_TYPES, separar_pdf, validar_pdf
+from .documents import (
+    DOCUMENT_TYPES,
+    convertir_imagen_a_pdf,
+    separar_pdf,
+    validar_pdf,
+)
 from .drive import (
     DRIVE_SCOPE,
     checklist as drive_checklist,
@@ -374,12 +379,20 @@ def subir_pdf_expediente(
             detail="El tipo documental seleccionado no es válido.",
         )
     try:
-        content = archivo.file.read(50 * 1024 * 1024 + 1)
+        max_upload_bytes = 50 * 1024 * 1024
+        source_content = archivo.file.read(max_upload_bytes + 1)
+        if len(source_content) > max_upload_bytes:
+            raise ValueError("El archivo supera el tamaño máximo de 50 MB.")
+        content = (
+            source_content
+            if source_content.startswith(b"%PDF")
+            else convertir_imagen_a_pdf(source_content)
+        )
+        if len(content) > max_upload_bytes:
+            raise ValueError("El documento convertido supera el tamaño máximo de 50 MB.")
         valid, detail = validar_pdf(content)
         if not valid:
             raise ValueError(detail)
-        if len(content) > 50 * 1024 * 1024:
-            raise ValueError("El PDF supera el tamaño máximo de 50 MB.")
         separated = separar_pdf(content, tipo_documento)
         suggested_case = str(separated.get("clasificacion_final") or "")
 

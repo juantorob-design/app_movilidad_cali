@@ -10,6 +10,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
@@ -922,20 +923,21 @@ class MainActivity : ComponentActivity() {
     private fun uploadPdf(uri: Uri, radicado: String, unlinkedPlate: String?) {
         lifecycleScope.launch {
             busy = true
-            uploadSummary = "Leyendo y organizando el PDF..."
+            uploadSummary = "Leyendo y organizando el documento..."
             if (unlinkedPlate != null) {
                 message = "Guardando complemento pendiente para la placa $unlinkedPlate..."
             }
             try {
                 val result = withContext(Dispatchers.IO) {
-                    val bytes = readPdf(uri)
-                    val filename = displayName(uri).ifBlank { "expediente.pdf" }
+                    val filename = displayName(uri).ifBlank { "documento" }
+                    val contentType = documentContentType(uri, filename)
+                    val bytes = readDocument(uri)
                     val requestBody = MultipartBody.Builder()
                         .setType(MultipartBody.FORM)
                         .addFormDataPart(
                             "archivo",
                             filename,
-                            bytes.toRequestBody("application/pdf".toMediaType()),
+                            bytes.toRequestBody(contentType.toMediaType()),
                         )
                         .addFormDataPart("tipo_documento", "Otro")
                         .addFormDataPart("placa_complemento", unlinkedPlate.orEmpty())
@@ -958,7 +960,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 val blocks = result.optJSONArray("bloques") ?: JSONArray()
-                uploadSummary = "PDF procesado: ${result.optInt("paginas")} páginas, " +
+                uploadSummary = "Documento procesado: ${result.optInt("paginas")} páginas, " +
                     "${blocks.length()} bloques; OCR en ${result.optInt("paginas_ocr")} páginas."
                 val suggestedClassification = result.optString("clasificacion_sugerida")
                 val finalClassification = result.optString("clasificacion_final")
@@ -1096,7 +1098,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun readPdf(uri: Uri): ByteArray {
+    private fun readDocument(uri: Uri): ByteArray {
         val output = ByteArrayOutputStream()
         val input = contentResolver.openInputStream(uri)
             ?: throw IOException("No se pudo abrir el archivo seleccionado.")
@@ -1108,12 +1110,28 @@ class MainActivity : ComponentActivity() {
                 if (count < 0) break
                 total += count
                 if (total > 50 * 1024 * 1024) {
-                    throw IOException("El PDF supera el tamaño máximo de 50 MB.")
+                    throw IOException("El documento supera el tamaño máximo de 50 MB.")
                 }
                 output.write(buffer, 0, count)
             }
         }
         return output.toByteArray()
+    }
+
+    private fun documentContentType(uri: Uri, filename: String): String {
+        val mimeType = contentResolver.getType(uri)?.substringBefore(';')?.lowercase()
+        val candidate = mimeType ?: when (filename.substringAfterLast('.', "").lowercase()) {
+            "pdf" -> "application/pdf"
+            "png" -> "image/png"
+            "jpg", "jpeg" -> "image/jpeg"
+            else -> ""
+        }
+        return when (candidate) {
+            "application/pdf" -> "application/pdf"
+            "image/png" -> "image/png"
+            "image/jpeg", "image/jpg", "image/pjpeg" -> "image/jpeg"
+            else -> throw IOException("Seleccione un archivo PDF, PNG o JPG.")
+        }
     }
 
     private fun displayName(uri: Uri): String {
@@ -1153,9 +1171,16 @@ class MainActivity : ComponentActivity() {
 
     private fun openExternalUrl(url: String, service: String) {
         try {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            CustomTabsIntent.Builder()
+                .setShowTitle(true)
+                .build()
+                .launchUrl(this, Uri.parse(url))
         } catch (_: ActivityNotFoundException) {
-            message = "No hay una aplicación o navegador disponible para abrir $service."
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            } catch (_: ActivityNotFoundException) {
+                message = "No hay una aplicación o navegador disponible para abrir $service."
+            }
         }
     }
 }
@@ -1345,11 +1370,15 @@ private fun NewCaseScreen(
             style = MaterialTheme.typography.bodySmall,
         )
         OutlinedButton(
-            onClick = { complementPicker.launch(arrayOf("application/pdf")) },
+            onClick = {
+                complementPicker.launch(
+                    arrayOf("application/pdf", "image/png", "image/jpeg"),
+                )
+            },
             enabled = !busy && placa.isNotBlank(),
             modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
         ) {
-            Text("Seleccionar complemento PDF")
+            Text("Seleccionar complemento PDF o imagen")
         }
     }
 }
@@ -2288,12 +2317,16 @@ private fun CaseDetailScreen(
                     Text("Editar datos del expediente")
                 }
                 Button(
-                    onClick = { documentPicker.launch(arrayOf("application/pdf")) },
+                    onClick = {
+                        documentPicker.launch(
+                            arrayOf("application/pdf", "image/png", "image/jpeg"),
+                        )
+                    },
                     enabled = !busy,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
                 ) {
                     if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    else Text("Seleccionar PDF · OCR y organizar")
+                    else Text("Seleccionar PDF o imagen · OCR y organizar")
                 }
             }
             OutlinedButton(

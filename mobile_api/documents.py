@@ -7,6 +7,7 @@ import re
 from functools import lru_cache
 
 import fitz
+from PIL import Image, ImageOps, UnidentifiedImageError
 from PyPDF2 import PdfReader, PdfWriter
 from PyPDF2.errors import PdfReadError
 from rapidocr_onnxruntime import RapidOCR
@@ -19,6 +20,7 @@ from document_rules import (
 
 
 MAX_PDF_PAGES = 300
+MAX_IMAGE_PIXELS = 25_000_000
 DOCUMENT_TYPES = {
     "Expediente completo",
     "Solicitud",
@@ -42,6 +44,47 @@ DOCUMENT_TYPES = {
     "Desistimiento",
     "Otro",
 }
+
+
+def convertir_imagen_a_pdf(image_bytes: bytes) -> bytes:
+    if not image_bytes:
+        raise ValueError("La imagen está vacía.")
+
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            image_format = image.format
+            width, height = image.size
+            if width * height > MAX_IMAGE_PIXELS:
+                raise ValueError(
+                    f"La imagen supera el máximo de {MAX_IMAGE_PIXELS:,} píxeles."
+                )
+            image.verify()
+        if image_format not in {"PNG", "JPEG"}:
+            raise ValueError("Solo se aceptan imágenes PNG o JPG.")
+
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            image.load()
+            oriented = ImageOps.exif_transpose(image)
+            try:
+                rgba = oriented.convert("RGBA")
+                background = Image.new("RGB", rgba.size, "white")
+                background.paste(rgba, mask=rgba.getchannel("A"))
+                output = io.BytesIO()
+                background.save(output, format="PDF", resolution=150.0)
+                background.close()
+                rgba.close()
+                return output.getvalue()
+            finally:
+                if oriented is not image:
+                    oriented.close()
+    except (
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+        OSError,
+        SyntaxError,
+        UnidentifiedImageError,
+    ) as error:
+        raise ValueError(f"No se pudo leer la imagen PNG o JPG: {error}") from error
 
 
 def validar_pdf(pdf_bytes: bytes) -> tuple[bool, str]:

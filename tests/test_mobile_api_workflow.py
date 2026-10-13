@@ -5,9 +5,10 @@ from unittest.mock import patch
 
 import fitz
 from fastapi import UploadFile
+from PIL import Image
 
 from mobile_api import drive, main
-from mobile_api.documents import separar_pdf
+from mobile_api.documents import convertir_imagen_a_pdf, separar_pdf, validar_pdf
 from mobile_api.expedientes import _google_session, guardar_expediente_sheets
 
 
@@ -143,6 +144,28 @@ class TestMobileApiSheetsWrites(unittest.TestCase):
 
 
 class TestMobileApiDocumentWorkflow(unittest.TestCase):
+    def test_png_and_jpeg_images_convert_to_valid_single_page_pdfs(self):
+        for image_format in ("PNG", "JPEG"):
+            with self.subTest(image_format=image_format):
+                source = io.BytesIO()
+                Image.new("RGB", (24, 32), "white").save(source, format=image_format)
+
+                pdf = convertir_imagen_a_pdf(source.getvalue())
+                valid, detail = validar_pdf(pdf)
+                document = fitz.open(stream=pdf, filetype="pdf")
+
+                self.assertTrue(valid, detail)
+                self.assertEqual(len(document), 1)
+                document.close()
+
+    def test_image_conversion_rejects_unsupported_and_invalid_files(self):
+        source = io.BytesIO()
+        Image.new("RGB", (16, 16), "white").save(source, format="BMP")
+        with self.assertRaisesRegex(ValueError, "PNG o JPG"):
+            convertir_imagen_a_pdf(source.getvalue())
+        with self.assertRaisesRegex(ValueError, "No se pudo leer"):
+            convertir_imagen_a_pdf(b"not an image")
+
     def test_final_classification_uses_desistimiento_resource_or_executoria_evidence(self):
         evidence = [
             ("La resolución declara el desistimiento de la solicitud.", "Desistimiento"),
@@ -267,6 +290,61 @@ class TestMobileApiDocumentWorkflow(unittest.TestCase):
         self.assertEqual(result["bloques"][0]["paginas"], [1])
         self.assertFalse(result["pendiente_vinculacion"])
         self.assertTrue(upload.file.closed)
+
+    def test_upload_converts_png_and_keeps_original_filename_for_traceability(self):
+        case = {
+            "radicado_padre": "RAD-2026-010",
+            "placa": "ABC123",
+            "fecha_solicitud": "01/03/2026",
+            "ubicacion": "",
+        }
+        image = io.BytesIO()
+        Image.new("RGB", (24, 32), "white").save(image, format="PNG")
+        upload = UploadFile(file=io.BytesIO(image.getvalue()), filename="evidencia.png")
+        uploads = []
+        processed_content = []
+        block = {
+            "tipo_documento": "Solicitud",
+            "contenido": b"%PDF-block",
+            "paginas": [1],
+        }
+
+        def record_upload(_session, parent_id, filename, content, kind, **metadata):
+            uploads.append((parent_id, filename, content, kind, metadata))
+            return {"name": filename}
+
+        def record_separation(content, _tipo_documento):
+            processed_content.append(content)
+            return {
+                "bloques": [block],
+                "paginas": 1,
+                "paginas_ocr": 0,
+                "clasificacion_final": "",
+            }
+
+        with (
+            patch.object(
+                main,
+                "cargar_expedientes_configurados",
+                return_value={case["radicado_padre"]: case},
+            ),
+            patch.object(main, "google_session_for_owner", return_value=object()),
+            patch.object(main, "expediente_folder", return_value=("folder-1", "case-folder")),
+            patch.object(main, "document_folder", return_value="request-folder"),
+            patch.object(main, "upload_pdf", side_effect=record_upload),
+            patch.object(main, "separar_pdf", side_effect=record_separation),
+        ):
+            result = main.subir_pdf_expediente(
+                "RAD-2026-010",
+                {"role": "Modificador"},
+                upload,
+                tipo_documento="Otro",
+            )
+
+        self.assertTrue(processed_content[0].startswith(b"%PDF"))
+        self.assertTrue(uploads[0][2].startswith(b"%PDF"))
+        self.assertEqual(uploads[1][4]["source_filename"], "evidencia.png")
+        self.assertEqual(result["bloques"][0]["archivo_origen"], "evidencia.png")
 
     def test_upload_saves_detected_classification_only_when_case_is_unclassified(self):
         case = {

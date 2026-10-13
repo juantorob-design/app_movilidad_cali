@@ -27,17 +27,19 @@ distintos y ambos deben permanecer configurados.
 
 La interfaz móvil conserva la paleta azul y cian y adapta el mosaico de
 aplicaciones del programa de escritorio a una cuadrícula para celular. El
-buscador, el listado, el detalle, el perfil, el registro básico y la carga PDF
+buscador, el listado, el detalle, el perfil, el registro básico y la carga de PDF
+e imágenes PNG/JPG
 están conectados a la API. La búsqueda incluye radicado, placa, NIT, empresa,
 propietario, cédula y fecha. El icono adaptativo y la marca de la pantalla de
 inicio usan la imagen `images/icon.ico` del programa original, convertida a
 recursos compatibles con Android. Google Drive y Google Sheets abren la
-carpeta documental y la hoja operacional configuradas, como accesos externos
-del programa de escritorio.
+carpeta documental y la hoja operacional configuradas en una pestaña del
+navegador con control para cerrarla y volver a la app.
 
 Registro de Entrada permite guardar inicialmente el radicado padre, la placa y
 la fecha de solicitud; no solicita una clasificación antes de revisar los
-documentos. Al cargar un PDF, el servidor hace OCR de páginas escaneadas,
+documentos. Al cargar un PDF o una imagen PNG/JPG, el servidor convierte las
+imágenes a PDF, hace OCR de páginas escaneadas,
 separa bloques documentales contiguos según `document_rules.py`, guarda el PDF
 completo y archiva cada bloque en la subcarpeta Drive de su tipo. Si encuentra
 evidencia suficiente, propone una clasificación y la guarda en Sheets solo si
@@ -100,16 +102,14 @@ automáticamente.
 - Registrar el cliente Android y el cliente Web en el mismo proyecto de Google
   Cloud. El ID de cliente Web es publico y se configura en el APK; su secreto no
   se incluye en Android.
-- La autenticación de Android conserva la pareja de clientes ya registrada en
-  `gen-lang-client-0724588409`. Una prueba de creación en
-  `sistema-desvinculaciones-cali` fue rechazada por Google porque el paquete y la
-  huella ya están registrados allí:
-  - Cliente Web (audiencia): `865100334282-pl21ckiipbqu2gljjc99ki4hoiqngopm.apps.googleusercontent.com`.
-  - Cliente Android de depuración: `865100334282-ko5f3v8elcf06b0eg4823i3rn1bbdcuk.apps.googleusercontent.com`.
-  - Paquete: `co.sistemadesvinculaciones.mobile`.
-  - El cliente Android existente se registró con la huella SHA-1 del keystore debug
-    local. Para distribuir un APK firmado con otra clave o mediante Google Play,
-    registra también la huella de esa firma de producción en ese mismo proyecto.
+- La autenticación móvil usa los clientes OAuth del proyecto activo
+  `sistema-desvinculaciones-cali`:
+  - Cliente Web (audiencia): `1019857870350-ccrqd53kcl0c6k799f0om2p5fnloviij.apps.googleusercontent.com`.
+  - Cliente Android de Release: registrado para el paquete
+    `co.sistemadesvinculaciones.mobile` y la huella SHA-1 de la clave de
+    distribución.
+  - La aplicación está en modo de prueba; agrega las cuentas autorizadas como
+    usuarios de prueba en Google Auth Platform.
 - El cliente de escritorio usado por el programa Windows para Drive/Sheets está
   en `sistema-desvinculaciones-cali`; son configuraciones OAuth separadas. El ID
   de cliente web configurado en Android debe seguir emparejado con su cliente
@@ -153,6 +153,19 @@ Para el despliegue de prueba en Render Free, consulta
 APK consulta `/health` antes de autenticarse; esa petición despierta el servicio
 si Render lo durmió y reintenta brevemente durante el arranque en frío. El primer
 inicio puede tardar más de un minuto.
+
+Los APK Release requieren una clave dedicada y protegida, distinta de la clave
+debug. El archivo PKCS#12 y la contraseña DPAPI permanecen fuera del repositorio
+en `%LOCALAPPDATA%\SistemaDesvinculaciones\release-signing\`. El wrapper
+`build_release.ps1` usa esa contraseña solo en el proceso local de Gradle y
+genera `app/build/outputs/apk/release/app-release.apk`. La copia de recuperación
+del archivo PKCS#12 debe mantenerse en Drive privado; su contraseña debe
+guardarse por separado en un gestor de contraseñas. En este equipo también se
+guardó en Credenciales de Windows con el destino
+`SistemaDesvinculaciones/AndroidReleaseKeystore`; Windows Hello desbloquea la
+sesión, mientras DPAPI protege la copia local usada por el wrapper. No publiques
+el APK hasta probar inicio de sesión y operaciones con una cuenta y documentos
+ficticios.
 
 El APK debug se genera en
 `app/build/outputs/apk/debug/app-debug.apk`. Si no se pasan las propiedades,
