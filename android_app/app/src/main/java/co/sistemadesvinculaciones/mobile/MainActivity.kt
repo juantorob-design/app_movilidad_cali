@@ -788,10 +788,12 @@ class MainActivity : ComponentActivity() {
         radicado: String,
         placa: String,
         fecha: String,
+        documentoPrincipal: Uri,
     ) {
         lifecycleScope.launch {
             busy = true
             message = ""
+            var saved = false
             try {
                 val body = JSONObject()
                     .put("radicado_padre", radicado.trim())
@@ -810,13 +812,26 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                cases = fetchCasesFromServer()
-                message = "Expediente guardado en la hoja operacional."
-                appState = AppState.Home
+                saved = true
+                selectedCaseData = JSONObject()
+                    .put("radicado_padre", radicado.trim())
+                    .put("placa", placa.trim().uppercase())
+                    .put("fecha_solicitud", fecha.trim())
+                appState = AppState.CaseDetail
+                uploadSummary = "Expediente guardado. Preparando el documento principal..."
+                try {
+                    cases = fetchCasesFromServer()
+                } catch (error: IOException) {
+                    message = "Expediente guardado; no se pudo actualizar la lista: " +
+                        (error.message ?: "error de conexión.")
+                }
             } catch (error: Exception) {
                 message = error.message ?: "No se pudo guardar el expediente."
             } finally {
                 busy = false
+            }
+            if (saved) {
+                uploadPdf(documentoPrincipal, radicado.trim(), null)
             }
         }
     }
@@ -1286,12 +1301,18 @@ private fun NewCaseScreen(
     busy: Boolean,
     message: String,
     onBack: () -> Unit,
-    onCreate: (radicado: String, placa: String, fecha: String) -> Unit,
+    onCreate: (radicado: String, placa: String, fecha: String, documentoPrincipal: Uri) -> Unit,
     onUploadComplement: (placa: String, uri: Uri) -> Unit,
 ) {
     var radicado by remember { mutableStateOf("") }
     var placa by remember { mutableStateOf("") }
     var fecha by remember { mutableStateOf("") }
+    var documentoPrincipal by remember { mutableStateOf<Uri?>(null) }
+    val primaryDocumentPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) documentoPrincipal = uri
+    }
     val complementPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
@@ -1318,6 +1339,37 @@ private fun NewCaseScreen(
             color = Muted,
             style = MaterialTheme.typography.bodySmall,
         )
+        Text(
+            "Petición principal (PDF o foto) · requerida",
+            modifier = Modifier.padding(top = 8.dp, bottom = 6.dp),
+            color = Muted,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedButton(
+            onClick = {
+                primaryDocumentPicker.launch(
+                    arrayOf("application/pdf", "image/png", "image/jpeg"),
+                )
+            },
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
+        ) {
+            Text(
+                if (documentoPrincipal == null) {
+                    "Seleccionar petición PDF o foto"
+                } else {
+                    "Petición seleccionada · cambiar archivo"
+                },
+            )
+        }
+        if (documentoPrincipal != null) {
+            Text(
+                "Se procesará con OCR al guardar el expediente.",
+                modifier = Modifier.padding(top = 4.dp),
+                color = Muted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
         OutlinedTextField(
             value = radicado,
             onValueChange = { radicado = it },
@@ -1346,13 +1398,15 @@ private fun NewCaseScreen(
             style = MaterialTheme.typography.bodySmall,
         )
         Button(
-            onClick = { onCreate(radicado, placa, fecha) },
+            onClick = {
+                documentoPrincipal?.let { onCreate(radicado, placa, fecha, it) }
+            },
             enabled = !busy && radicado.isNotBlank() && placa.isNotBlank() &&
-                fecha.isNotBlank(),
+                fecha.isNotBlank() && documentoPrincipal != null,
             modifier = Modifier.fillMaxWidth().padding(top = 14.dp).heightIn(min = 50.dp),
         ) {
             if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-            else Text("Guardar expediente")
+            else Text("Guardar y procesar expediente")
         }
         if (message.isNotBlank()) {
             StatusBanner(message, isError = message.contains("no se", ignoreCase = true))

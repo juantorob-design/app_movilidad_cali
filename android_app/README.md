@@ -37,8 +37,12 @@ carpeta documental y la hoja operacional configuradas en una pestaña del
 navegador con control para cerrarla y volver a la app.
 
 Registro de Entrada permite guardar inicialmente el radicado padre, la placa y
-la fecha de solicitud; no solicita una clasificación antes de revisar los
-documentos. Al cargar un PDF o una imagen PNG/JPG, el servidor convierte las
+la fecha de solicitud junto con la petición principal en PDF o foto; el archivo
+se puede seleccionar antes de completar esos campos. Al guardar, la app crea el
+expediente y envía el documento principal para OCR y organización en Drive.
+El botón de complemento pendiente es independiente y requiere la placa; no
+sustituye la carga documental del expediente. No se solicita una clasificación
+antes de revisar los documentos. Al procesar un PDF o una imagen PNG/JPG, el servidor convierte las
 imágenes a PDF, hace OCR de páginas escaneadas,
 separa bloques documentales contiguos según `document_rules.py`, guarda el PDF
 completo y archiva cada bloque en la subcarpeta Drive de su tipo. Si encuentra
