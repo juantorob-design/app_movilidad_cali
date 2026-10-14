@@ -69,14 +69,14 @@ tasks.configureEach {
 
 android {
     namespace = "co.sistemadesvinculaciones.mobile"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "co.sistemadesvinculaciones.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.1.3"
+        versionCode = 6
+        versionName = "0.1.5"
         buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
         buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"$googleWebClientId\"")
         buildConfigField("String", "SPREADSHEET_ID", "\"$spreadsheetId\"")
@@ -130,5 +130,6 @@ dependencies {
     implementation("androidx.credentials:credentials:1.5.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
     implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
+    implementation("com.llamatik:library:1.10.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

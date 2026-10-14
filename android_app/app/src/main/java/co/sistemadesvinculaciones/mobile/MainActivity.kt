@@ -7,6 +7,7 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -39,6 +40,8 @@ import androidx.lifecycle.lifecycleScope
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -60,11 +63,20 @@ data class Expediente(
     val radicado_padre: String,
     val placa: String,
     val fecha_solicitud: String,
+    val ubicacion: String,
     val propietario: String,
     val cedula_propietario: String,
     val empresa: String,
     val nit_empresa: String,
     val caso: String,
+)
+
+private data class ArchiveSummary(
+    val totalExpedientes: Int,
+    val completos: Int,
+    val conFaltantes: Int,
+    val documentosRegistrados: Int,
+    val actualizadoEn: String,
 )
 
 private data class DocumentoDrive(
@@ -196,13 +208,18 @@ class MainActivity : ComponentActivity() {
     private var downloadRequested by mutableStateOf(false)
     private var authToken by mutableStateOf("")
     private var cases by mutableStateOf<List<Expediente>>(emptyList())
+    private var archiveSummary by mutableStateOf<ArchiveSummary?>(null)
     private var selectedCaseData by mutableStateOf<JSONObject?>(null)
     private var selectedDocuments by mutableStateOf<List<DocumentoDrive>>(emptyList())
     private var pendingComplements by mutableStateOf<List<ComplementoPendiente>>(emptyList())
     private var uploadSummary by mutableStateOf("")
+    private var localAiStatus by mutableStateOf("")
+    private var localAiProgress by mutableStateOf<Float?>(null)
+    private var localAiExtraction by mutableStateOf<LocalAiExtraction?>(null)
+    private var localAiJob: Job? = null
+    private val localVisionAssistant by lazy { LocalVisionAssistant(applicationContext) }
     private var message by mutableStateOf("")
     private var busy by mutableStateOf(false)
-    private var caseListTitle by mutableStateOf("Consulta de expedientes")
     private var sharedProfiles by mutableStateOf<List<WorkspaceProfile>>(emptyList())
     private var sharedMessages by mutableStateOf<List<WorkspaceMessage>>(emptyList())
 
@@ -222,6 +239,17 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme(colorScheme = AppColors) {
+                BackHandler(
+                    enabled = appState != AppState.Login && appState != AppState.Home,
+                ) {
+                    if (appState == AppState.NewCase) cancelLocalAi()
+                    appState = when (appState) {
+                        AppState.CaseEdit -> AppState.CaseDetail
+                        AppState.CaseDetail -> AppState.CaseList
+                        AppState.CaseList -> AppState.Home
+                        else -> AppState.Home
+                    }
+                }
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
@@ -243,23 +271,18 @@ class MainActivity : ComponentActivity() {
                                     "Administrador",
                                     "Super Administrador",
                                 ),
-                                canManageProfiles = userRole in setOf(
+                                canManageProfiles = userRole == "Super Administrador",
+                                canOpenGoogle = userRole in setOf(
+                                    "Modificador",
                                     "Administrador",
                                     "Super Administrador",
                                 ),
                                 downloadAllowed = downloadAllowed,
                                 downloadRequested = downloadRequested,
-                                cases = cases,
+                                archiveSummary = archiveSummary,
                                 message = message,
                                 busy = busy,
-                                onOpenCases = {
-                                    caseListTitle = "Consulta de expedientes"
-                                    appState = AppState.CaseList
-                                },
-                                onOpenHistorical = {
-                                    caseListTitle = "Base Histórica"
-                                    appState = AppState.CaseList
-                                },
+                                onOpenCases = { appState = AppState.CaseList },
                                 onCreateCase = { appState = AppState.NewCase },
                                 onOpenProfile = { appState = AppState.Profile },
                                 onOpenPermissions = ::openSharedPermissions,
@@ -289,7 +312,6 @@ class MainActivity : ComponentActivity() {
                                 message = message,
                                 busy = busy,
                                 userEmail = userEmail,
-                                title = caseListTitle,
                                 onCaseSelect = ::selectCase,
                                 onRefresh = ::refreshCases,
                                 onHome = { appState = AppState.Home },
@@ -314,6 +336,9 @@ class MainActivity : ComponentActivity() {
                                 onUploadPdf = ::uploadCasePdf,
                                 onRefreshChecklist = ::refreshChecklist,
                                 onLinkComplement = ::linkPendingComplement,
+                                onOpenDocument = {
+                                    openExternalUrl(it, "Google Drive")
+                                },
                             )
                         }
                         AppState.CaseEdit -> {
@@ -331,8 +356,18 @@ class MainActivity : ComponentActivity() {
                             NewCaseScreen(
                                 busy = busy,
                                 message = message,
-                                onBack = { appState = AppState.Home },
+                                aiBusy = localAiJob?.isActive == true,
+                                aiStatus = localAiStatus,
+                                aiProgress = localAiProgress,
+                                aiExtraction = localAiExtraction,
+                                onBack = {
+                                    cancelLocalAi()
+                                    appState = AppState.Home
+                                },
                                 onCreate = ::createCase,
+                                onAnalyzePrimaryDocument = ::analyzePrimaryDocument,
+                                onPrimaryDocumentSelected = ::resetLocalAiState,
+                                onCancelLocalAi = ::cancelLocalAi,
                                 onUploadComplement = { plate, uri ->
                                     uploadUnlinkedComplement(uri, plate)
                                 },
@@ -373,7 +408,58 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                     }
+
                 }
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        val aiJob = localAiJob
+        cancelLocalAi()
+        if (aiJob == null || aiJob.isCompleted) {
+            localVisionAssistant.release()
+        } else {
+            aiJob.invokeOnCompletion { localVisionAssistant.release() }
+        }
+        super.onDestroy()
+    }
+
+    private fun resetLocalAiState() {
+        if (localAiJob?.isActive == true) cancelLocalAi()
+        localAiExtraction = null
+        localAiProgress = null
+        localAiStatus = ""
+    }
+
+    private fun cancelLocalAi() {
+        localAiJob?.cancel()
+        localVisionAssistant.cancel()
+        localAiProgress = null
+        localAiStatus = "Análisis local cancelado."
+    }
+
+    private fun analyzePrimaryDocument(uri: Uri) {
+        if (localAiJob?.isActive == true) return
+        resetLocalAiState()
+        localAiStatus = "Preparando IA local…"
+        localAiJob = lifecycleScope.launch {
+            try {
+                localAiExtraction = localVisionAssistant.extractPrimaryDocument(uri) { status, progress ->
+                    localAiStatus = status
+                    localAiProgress = progress
+                }
+                localAiStatus = "Análisis local terminado. Revisa los campos antes de guardar."
+                localAiProgress = null
+            } catch (error: CancellationException) {
+                localAiStatus = "Análisis local cancelado."
+                throw error
+            } catch (error: Exception) {
+                localAiStatus = "No se pudo completar el análisis local: " +
+                    (error.message ?: "error desconocido.")
+                localAiProgress = null
+            } finally {
+                localAiJob = null
             }
         }
     }
@@ -414,7 +500,14 @@ class MainActivity : ComponentActivity() {
                 try {
                     message = "Sesión verificada. Cargando expedientes..."
                     cases = fetchCasesFromServer()
-                    message = "Listo. ${cases.size} expedientes encontrados."
+                    archiveSummary = null
+                    try {
+                        archiveSummary = fetchArchiveSummaryFromServer()
+                        message = "Listo. ${cases.size} expedientes encontrados."
+                    } catch (error: Exception) {
+                        message = "Expedientes cargados; no se pudo actualizar el estado " +
+                            "del archivo: ${error.message ?: "error de consulta."}"
+                    }
                 } catch (error: Exception) {
                     cases = emptyList()
                     message = "Sesión verificada, pero no se pudieron cargar expedientes: " +
@@ -553,6 +646,7 @@ class MainActivity : ComponentActivity() {
                             radicado_padre = obj.optString("radicado_padre", ""),
                             placa = obj.optString("placa", ""),
                             fecha_solicitud = obj.optString("fecha_solicitud", ""),
+                            ubicacion = obj.optString("ubicacion", ""),
                             propietario = obj.optString("propietario", ""),
                             cedula_propietario = obj.optString("cedula_propietario", ""),
                             empresa = obj.optString("empresa", ""),
@@ -564,6 +658,26 @@ class MainActivity : ComponentActivity() {
                 result
             }
         }
+
+    private suspend fun fetchArchiveSummaryFromServer(): ArchiveSummary {
+        val result = workspaceRequest("GET", "/api/v1/archivo/resumen")
+        val summary = result.optJSONObject("resumen")
+            ?: throw IOException("La API no devolvió el resumen del archivo.")
+        val total = summary.optInt("total_expedientes", -1)
+        val complete = summary.optInt("completos", -1)
+        val missing = summary.optInt("con_faltantes", -1)
+        val documents = summary.optInt("documentos_registrados", -1)
+        if (listOf(total, complete, missing, documents).any { it < 0 }) {
+            throw IOException("La API devolvió indicadores incompletos del archivo.")
+        }
+        return ArchiveSummary(
+            total,
+            complete,
+            missing,
+            documents,
+            result.optString("actualizado_en"),
+        )
+    }
 
     private suspend fun workspaceRequest(
         method: String,
@@ -745,7 +859,9 @@ class MainActivity : ComponentActivity() {
                 downloadAllowed = currentUser.optBoolean("download_allowed")
                 downloadRequested = currentUser.optBoolean("download_requested")
                 cases = fetchCasesFromServer()
-                message = "Permisos y expedientes actualizados desde el servidor."
+                archiveSummary = null
+                archiveSummary = fetchArchiveSummaryFromServer()
+                message = "Permisos, expedientes y estado del archivo actualizados desde Google Sheets."
             } catch (error: Exception) {
                 message = error.message ?: "No se pudieron actualizar los expedientes."
             } finally {
@@ -829,8 +945,10 @@ class MainActivity : ComponentActivity() {
                 uploadSummary = "Expediente guardado. Preparando el documento principal..."
                 try {
                     cases = fetchCasesFromServer()
+                    archiveSummary = fetchArchiveSummaryFromServer()
                 } catch (error: IOException) {
-                    message = "Expediente guardado; no se pudo actualizar la lista: " +
+                    archiveSummary = null
+                    message = "Expediente guardado; no se pudo actualizar la lista y el estado: " +
                         (error.message ?: "error de conexión.")
                 }
             } catch (error: Exception) {
@@ -913,8 +1031,10 @@ class MainActivity : ComponentActivity() {
                 appState = AppState.CaseDetail
                 message = try {
                     cases = fetchCasesFromServer()
+                    archiveSummary = fetchArchiveSummaryFromServer()
                     "Cambios guardados en Google Sheets."
                 } catch (error: Exception) {
+                    archiveSummary = null
                     "Cambios guardados; no se pudo actualizar la lista: " +
                         (error.message ?: "error de conexión.")
                 }
@@ -1017,8 +1137,10 @@ class MainActivity : ComponentActivity() {
                         loadChecklist(radicado)
                         selectedCaseData = JSONObject(fetchCaseDetails(radicado))
                             .optJSONObject("expediente")
+                        archiveSummary = fetchArchiveSummaryFromServer()
                     } catch (error: Exception) {
-                        uploadSummary += " No se pudo actualizar la vista del expediente: " +
+                        archiveSummary = null
+                        uploadSummary += " No se pudo actualizar la vista o el estado del archivo: " +
                             (error.message ?: "error de consulta.")
                     }
                 } else {
@@ -1048,7 +1170,7 @@ class MainActivity : ComponentActivity() {
                         "${BuildConfig.API_BASE_URL.trimEnd('/')}/api/v1/expedientes/" +
                             "upload-jobs/${Uri.encode(jobId)}"
                     )
-                    .header("Authorization", "******")
+                    .header("Authorization", "Bearer $authToken")
                     .get()
                     .build()
                 apiRequestClient.newCall(request).execute().use { response ->
@@ -1378,8 +1500,15 @@ private fun StatusBanner(message: String, isError: Boolean) {
 private fun NewCaseScreen(
     busy: Boolean,
     message: String,
+    aiBusy: Boolean,
+    aiStatus: String,
+    aiProgress: Float?,
+    aiExtraction: LocalAiExtraction?,
     onBack: () -> Unit,
     onCreate: (radicado: String, placa: String, fecha: String, documentoPrincipal: Uri) -> Unit,
+    onAnalyzePrimaryDocument: (Uri) -> Unit,
+    onPrimaryDocumentSelected: () -> Unit,
+    onCancelLocalAi: () -> Unit,
     onUploadComplement: (placa: String, uri: Uri) -> Unit,
 ) {
     var radicado by remember { mutableStateOf("") }
@@ -1389,7 +1518,10 @@ private fun NewCaseScreen(
     val primaryDocumentPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
-        if (uri != null) documentoPrincipal = uri
+        if (uri != null) {
+            documentoPrincipal = uri
+            onPrimaryDocumentSelected()
+        }
     }
     val complementPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -1429,7 +1561,7 @@ private fun NewCaseScreen(
                     arrayOf("application/pdf", "image/png", "image/jpeg"),
                 )
             },
-            enabled = !busy,
+            enabled = !busy && !aiBusy,
             modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
         ) {
             Text(
@@ -1442,11 +1574,63 @@ private fun NewCaseScreen(
         }
         if (documentoPrincipal != null) {
             Text(
-                "Se procesará con OCR al guardar el expediente.",
+                "El OCR completo se ejecuta al guardar. La IA local puede ayudar a completar radicado, placa y fecha.",
                 modifier = Modifier.padding(top = 4.dp),
                 color = Muted,
                 style = MaterialTheme.typography.bodySmall,
             )
+            OutlinedButton(
+                onClick = { documentoPrincipal?.let(onAnalyzePrimaryDocument) },
+                enabled = !busy && !aiBusy,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp).heightIn(min = 48.dp),
+            ) {
+                if (aiBusy) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("IA local en proceso…")
+                } else {
+                    Text("Analizar petición con IA local")
+                }
+            }
+            Text(
+                "Primera descarga: 2,93 GB aprox. Requiere conexión para descargar y teléfono con al menos 6 GB de RAM. El modelo analiza hasta 5 páginas en el dispositivo; al guardar, el PDF se envía a la API para el flujo completo.",
+                modifier = Modifier.padding(top = 4.dp),
+                color = Muted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (aiBusy) {
+                if (aiProgress == null) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
+                } else {
+                    LinearProgressIndicator(
+                        progress = { aiProgress.coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    )
+                }
+                TextButton(onClick = onCancelLocalAi) {
+                    Text("Cancelar descarga o análisis")
+                }
+            }
+            if (aiStatus.isNotBlank()) {
+                StatusBanner(
+                    aiStatus,
+                    isError = aiStatus.contains("no se pudo", ignoreCase = true) ||
+                        aiStatus.contains("falló", ignoreCase = true),
+                )
+            }
+            LaunchedEffect(aiExtraction, documentoPrincipal) {
+                val extraction = aiExtraction ?: return@LaunchedEffect
+                if (extraction.sourceUri != documentoPrincipal?.toString()) return@LaunchedEffect
+                if (radicado.isBlank() && extraction.radicado.isNotBlank()) {
+                    radicado = extraction.radicado
+                }
+                if (placa.isBlank() && extraction.placa.isNotBlank()) {
+                    placa = extraction.placa
+                }
+                if (fecha.isBlank() && extraction.fechaSolicitud.isNotBlank()) {
+                    fecha = extraction.fechaSolicitud
+                }
+            }
         }
         OutlinedTextField(
             value = radicado,
@@ -1479,7 +1663,7 @@ private fun NewCaseScreen(
             onClick = {
                 documentoPrincipal?.let { onCreate(radicado, placa, fecha, it) }
             },
-            enabled = !busy && radicado.isNotBlank() && placa.isNotBlank() &&
+            enabled = !busy && !aiBusy && radicado.isNotBlank() && placa.isNotBlank() &&
                 fecha.isNotBlank() && documentoPrincipal != null,
             modifier = Modifier.fillMaxWidth().padding(top = 14.dp).heightIn(min = 50.dp),
         ) {
@@ -1521,13 +1705,13 @@ private fun HomeScreen(
     userRole: String,
     canEditCases: Boolean,
     canManageProfiles: Boolean,
+    canOpenGoogle: Boolean,
     downloadAllowed: Boolean,
     downloadRequested: Boolean,
-    cases: List<Expediente>,
+    archiveSummary: ArchiveSummary?,
     message: String,
     busy: Boolean,
     onOpenCases: () -> Unit,
-    onOpenHistorical: () -> Unit,
     onCreateCase: () -> Unit,
     onOpenProfile: () -> Unit,
     onOpenPermissions: () -> Unit,
@@ -1538,10 +1722,6 @@ private fun HomeScreen(
     onRefresh: () -> Unit,
     onLogout: () -> Unit,
 ) {
-    val casesWithAppeal = cases.count { it.caso.equals("Con recurso", ignoreCase = true) }
-    val casesWithoutAppeal = cases.count { it.caso.equals("Sin recurso", ignoreCase = true) }
-    val withdrawals = cases.count { it.caso.equals("Desistimiento", ignoreCase = true) }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1613,7 +1793,7 @@ private fun HomeScreen(
             AppTile(
                 icon = "🔍",
                 title = "Buscador y Archivo",
-                description = "Consulta por radicado, placa, empresa o propietario.",
+                description = "Consulta por radicado, placa, ubicación, empresa o propietario.",
                 available = true,
                 onClick = onOpenCases,
                 modifier = Modifier.weight(1f),
@@ -1625,7 +1805,7 @@ private fun HomeScreen(
                 icon = "☁️",
                 title = "Google Drive",
                 description = "Abrir la carpeta documental del sistema.",
-                available = true,
+                available = canOpenGoogle,
                 onClick = onOpenDrive,
                 modifier = Modifier.weight(1f),
             )
@@ -1633,7 +1813,7 @@ private fun HomeScreen(
                 icon = "📊",
                 title = "Google Sheets",
                 description = "Abrir la hoja operacional del sistema.",
-                available = true,
+                available = canOpenGoogle,
                 onClick = onOpenSheets,
                 modifier = Modifier.weight(1f),
             )
@@ -1643,9 +1823,8 @@ private fun HomeScreen(
             AppTile(
                 icon = "🗂️",
                 title = "Base Histórica",
-                description = "Consulta de expedientes en la hoja compartida tabla_2.",
-                available = true,
-                onClick = onOpenHistorical,
+                description = "La importación del respaldo Excel está disponible en el programa de escritorio.",
+                available = false,
                 modifier = Modifier.weight(1f),
             )
             AppTile(
@@ -1680,14 +1859,38 @@ private fun HomeScreen(
         Text("Estado del archivo", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            MetricCard("Expedientes", cases.size.toString(), Modifier.weight(1f))
-            MetricCard("Con recurso", casesWithAppeal.toString(), Modifier.weight(1f))
+            MetricCard(
+                "Expedientes",
+                archiveSummary?.totalExpedientes?.toString() ?: "No disponible",
+                Modifier.weight(1f),
+            )
+            MetricCard(
+                "Completos",
+                archiveSummary?.completos?.toString() ?: "No disponible",
+                Modifier.weight(1f),
+            )
         }
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            MetricCard("Sin recurso", casesWithoutAppeal.toString(), Modifier.weight(1f))
-            MetricCard("Desistimientos", withdrawals.toString(), Modifier.weight(1f))
+            MetricCard(
+                "Con faltantes",
+                archiveSummary?.conFaltantes?.toString() ?: "No disponible",
+                Modifier.weight(1f),
+            )
+            MetricCard(
+                "Documentos registrados",
+                archiveSummary?.documentosRegistrados?.toString() ?: "No disponible",
+                Modifier.weight(1f),
+            )
         }
+        Text(
+            archiveSummary?.actualizadoEn?.let {
+                "Indicadores de Google Sheets actualizados: $it"
+            } ?: "No se pudo consultar el estado actual del archivo. Actualiza para reintentar.",
+            modifier = Modifier.padding(top = 6.dp),
+            color = if (archiveSummary == null) MaterialTheme.colorScheme.error else Muted,
+            style = MaterialTheme.typography.bodySmall,
+        )
         Spacer(Modifier.height(12.dp))
         OutlinedButton(
             onClick = onRefresh,
@@ -2159,7 +2362,6 @@ private fun CaseListScreen(
     message: String,
     busy: Boolean,
     userEmail: String,
-    title: String,
     onCaseSelect: (String) -> Unit,
     onRefresh: () -> Unit,
     onHome: () -> Unit,
@@ -2173,7 +2375,8 @@ private fun CaseListScreen(
         cases.filter {
             it.radicado_padre.contains(searchText.text, ignoreCase = true) ||
                     it.placa.contains(searchText.text, ignoreCase = true) ||
-                    it.nit_empresa.contains(searchText.text, ignoreCase = true) ||
+            it.ubicacion.contains(searchText.text, ignoreCase = true) ||
+            it.nit_empresa.contains(searchText.text, ignoreCase = true) ||
                     it.empresa.contains(searchText.text, ignoreCase = true) ||
                     it.propietario.contains(searchText.text, ignoreCase = true) ||
                     it.cedula_propietario.contains(searchText.text, ignoreCase = true) ||
@@ -2194,24 +2397,14 @@ private fun CaseListScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onHome) { Icon(Icons.Default.ArrowBack, contentDescription = "Volver al inicio") }
-            Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text("Consulta de expedientes", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             TextButton(onClick = onRefresh, enabled = !busy) { Text("Actualizar") }
-        }
-
-        if (title == "Base Histórica") {
-            Text(
-                "Fuente compartida: Google Sheets · pestaña tabla_2. La pestaña DATOS " +
-                    "se mantiene como información auxiliar y no se mezcla con los expedientes.",
-                modifier = Modifier.padding(bottom = 8.dp),
-                color = Muted,
-                style = MaterialTheme.typography.bodySmall,
-            )
         }
 
         OutlinedTextField(
             value = searchText,
             onValueChange = { searchText = it },
-            label = { Text("Radicado, placa, NIT, empresa, propietario, cédula o fecha") },
+            label = { Text("Radicado, placa, ubicación física, NIT, empresa, propietario, cédula o fecha") },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 8.dp),
@@ -2407,6 +2600,7 @@ private fun CaseDetailScreen(
     onUploadPdf: (Uri) -> Unit,
     onRefreshChecklist: () -> Unit,
     onLinkComplement: (String) -> Unit,
+    onOpenDocument: (String) -> Unit,
 ) {
     val documentPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -2580,6 +2774,14 @@ private fun CaseDetailScreen(
                                 color = Muted,
                                 style = MaterialTheme.typography.labelSmall,
                             )
+                        }
+                        if (document.url.isNotBlank()) {
+                            TextButton(
+                                onClick = { onOpenDocument(document.url) },
+                                modifier = Modifier.padding(top = 4.dp),
+                            ) {
+                                Text("Abrir en Google Drive")
+                            }
                         }
                     }
                     if (pendingComplements.isNotEmpty()) {

@@ -7,8 +7,10 @@ import threading
 import time
 import uuid
 from contextvars import ContextVar
+from datetime import datetime, timezone
 from typing import Annotated
 
+from archive_status import resumir_estado_archivo
 from fastapi import (
     BackgroundTasks,
     Depends,
@@ -431,6 +433,20 @@ def listar_expedientes(
     return {
         "expedientes": listar_expedientes_resumidos(expedientes),
         "total": len(expedientes),
+    }
+
+
+@app.get("/api/v1/archivo/resumen")
+def obtener_resumen_archivo(
+    user: Annotated[dict[str, str], Depends(get_current_user)],
+) -> dict:
+    """Returns archive metrics calculated from the operational Google Sheet."""
+    expedientes = cargar_expedientes_configurados()
+    resumen = resumir_estado_archivo(expedientes.values())
+    return {
+        "resumen": resumen,
+        "fuente": "Google Sheets",
+        "actualizado_en": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
 
 

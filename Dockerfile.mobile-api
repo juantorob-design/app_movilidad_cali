@@ -41,6 +41,7 @@ RUN pip install --upgrade pip \
     && pip install -r requirements-mobile-api.txt
 
 COPY --chown=app:app mobile_api ./mobile_api
+COPY --chown=app:app archive_status.py ./
 COPY --chown=app:app document_rules.py ./
 COPY --chown=app:app document_extraction.py ./
 USER app

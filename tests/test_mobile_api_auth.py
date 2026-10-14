@@ -120,6 +120,42 @@ class TestMobileGoogleAuthentication(unittest.TestCase):
         search_operation = app.openapi()["paths"]["/api/v1/expedientes/buscar"]["get"]
         self.assertEqual(search_operation["security"], [{"HTTPBearer": []}])
 
+    @patch("mobile_api.main.cargar_expedientes_configurados")
+    def test_archive_summary_endpoint_uses_shared_sheet_metrics(self, load_cases):
+        load_cases.return_value = {
+            "RAD-001": {
+                "radicado_padre": "RAD-001",
+                "contenido_documental": "Solicitud: a.pdf | Resolución: b.pdf",
+                "documentos_faltantes_drive": "",
+            }
+        }
+        previous_override = app.dependency_overrides.get(get_current_user)
+        app.dependency_overrides[get_current_user] = lambda: {
+            "email": "owner@gmail.com",
+            "role": "Super Administrador",
+        }
+        try:
+            response = TestClient(app).get("/api/v1/archivo/resumen")
+        finally:
+            if previous_override is None:
+                app.dependency_overrides.pop(get_current_user, None)
+            else:
+                app.dependency_overrides[get_current_user] = previous_override
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(
+            payload["resumen"],
+            {
+                "total_expedientes": 1,
+                "completos": 0,
+                "con_faltantes": 0,
+                "documentos_registrados": 2,
+            },
+        )
+        self.assertEqual(payload["fuente"], "Google Sheets")
+        self.assertTrue(payload["actualizado_en"])
+
     @patch("mobile_api.main.validar_identidad_google")
     @patch("mobile_api.main.shared_workspace.obtener_perfil")
     @patch.dict(

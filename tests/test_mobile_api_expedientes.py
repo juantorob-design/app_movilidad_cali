@@ -22,6 +22,7 @@ class TestMobileApiExpedientes(unittest.TestCase):
                     "PROPIETARIO",
                     "CEDULA",
                     "TIPO CASO",
+                    "REMITIDO",
                     "REQUERIMIENTO",
                     "DESISTIMIENTO",
                     "RESOLUCION RECURSO",
@@ -37,6 +38,7 @@ class TestMobileApiExpedientes(unittest.TestCase):
                     "Propietario",
                     "123456",
                     "Sin recurso",
+                    "Sí",
                     "REQ-2026-001",
                     "",
                     "",
@@ -53,6 +55,7 @@ class TestMobileApiExpedientes(unittest.TestCase):
         self.assertEqual(records["RAD-2026-001"]["nit_empresa"], "900123")
         self.assertEqual(records["RAD-2026-001"]["cedula_propietario"], "123456")
         self.assertEqual(records["RAD-2026-001"]["caso"], "Sin recurso")
+        self.assertEqual(records["RAD-2026-001"]["remitido"], "Sí")
         self.assertEqual(records["RAD-2026-001"]["requerimiento"], "REQ-2026-001")
         self.assertTrue(records["RAD-2026-001"]["documentos_drive"].startswith("https://"))
 
@@ -62,11 +65,13 @@ class TestMobileApiExpedientes(unittest.TestCase):
                 "radicado_padre": "RAD-2026-003",
                 "cedula_propietario": "123456",
                 "nit_empresa": "900123",
+                "ubicacion": "Caja 5",
             }
         )
 
         self.assertEqual(summary["cedula_propietario"], "123456")
         self.assertEqual(summary["nit_empresa"], "900123")
+        self.assertEqual(summary["ubicacion"], "Caja 5")
 
     def test_rejects_demo_rows_in_operational_sheet(self):
         with self.assertRaisesRegex(RuntimeError, "Demo records"):
