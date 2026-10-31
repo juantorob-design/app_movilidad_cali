@@ -1,0 +1,100 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    init: true
+    expose:
+      - "8501"
+    environment:
+      SISTEMA_WEB_MODE: "1"
+      SISTEMA_WEB_OWNER_EMAIL: ${SISTEMA_WEB_OWNER_EMAIL:?Set the single authorized Google email}
+      SUPABASE_URL: ${SUPABASE_URL:-https://ktgogijxtsidctkidrav.supabase.co}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:?Set the Supabase service-role key}
+      SISTEMA_DRIVE_FOLDER_ID: ${SISTEMA_DRIVE_FOLDER_ID:-1vwsw0RKXsoYYqXwhH2OZPaD-BrTiUUyl}
+      SISTEMA_SPREADSHEET_ID: ${SISTEMA_SPREADSHEET_ID:-1oQ5GnxSj4_gGA-p2NjlN3o0uDOLaIELZu4gpohLK6Uo}
+      SISTEMA_OLLAMA_URL: ${SISTEMA_OLLAMA_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./web-data:/data
+      - ./token.json:/run/secrets/google-token.json:rw
+      - ./credentials.json:/run/secrets/google-client.json:ro
+      - ./.streamlit/secrets.toml:/app/.streamlit/secrets.toml:ro
+    networks:
+      - private
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+
+  mobile-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.mobile-api
+    restart: unless-stopped
+    init: true
+    expose:
+      - "8000"
+    environment:
+      SISTEMA_GOOGLE_WEB_CLIENT_ID: ${SISTEMA_GOOGLE_WEB_CLIENT_ID:?Set the Google web OAuth client ID}
+      SISTEMA_WEB_OWNER_EMAIL: ${SISTEMA_WEB_OWNER_EMAIL:?Set the single authorized Google email}
+      SUPABASE_URL: ${SUPABASE_URL:-https://ktgogijxtsidctkidrav.supabase.co}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:?Set the Supabase service-role key}
+      SISTEMA_SPREADSHEET_ID: ${SISTEMA_SPREADSHEET_ID:-1oQ5GnxSj4_gGA-p2NjlN3o0uDOLaIELZu4gpohLK6Uo}
+      SISTEMA_GOOGLE_TOKEN_FILE: /run/secrets/google-token.json
+    volumes:
+      - ./token.json:/run/secrets/google-token.json:ro
+    networks:
+      - private
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+
+  pwa-proxy:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - web
+      - mobile-api
+    expose:
+      - "8080"
+    volumes:
+      - ./deploy/nginx-web.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/pwa:/usr/share/nginx/html/pwa:ro
+    networks:
+      - private
+
+  https:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - pwa-proxy
+    environment:
+      SISTEMA_WEB_DOMAIN: ${SISTEMA_WEB_DOMAIN:?Set a domain whose DNS points to this server}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - private
+
+networks:
+  private:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0d1322">
+    <meta name="description" content="Gestión compartida del sistema de desvinculaciones.">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; manifest-src 'self'; connect-src 'self' https://*.supabase.co; form-action 'self' https://*.supabase.co; base-uri 'self'; object-src 'none'">
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" href="./icon-192.png" type="image/png">
+    <link rel="apple-touch-icon" href="./icon-192.png">
+    <link rel="stylesheet" href="./style.css">
+    <title>Sistema de Desvinculaciones</title>
+    <script src="./config.js"></script>
+    <script src="./app.js" defer></script>
+    <script src="./register.js" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./" aria-label="Sistema de Desvinculaciones, inicio">
+        <img src="./icon-192.png" width="42" height="42" alt="">
+        <span>Sistema de Desvinculaciones</span>
+      </a>
+      <div class="header-actions">
+        <span id="user-label" class="user-label" hidden></span>
+        <button id="refresh-button" class="button button-quiet" type="button" hidden>
+          Actualizar
+        </button>
+        <button id="sign-out-button" class="button button-quiet" type="button" hidden>
+          Cerrar sesión
+        </button>
+      </div>
+    </header>
+
+    <main class="page">
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+      <section id="loading-panel" class="panel loading-panel">
+        <p>Conectando con el espacio de trabajo...</p>
+      </section>
+
+      <section id="sign-in-panel" class="panel sign-in-panel" hidden>
+        <p class="eyebrow">Acceso seguro</p>
+        <h1>Ingresa a tu espacio de trabajo</h1>
+        <p>Usa la cuenta de Google registrada para el sistema. El acceso depende del rol y estado aprobados por el administrador.</p>
+        <button id="sign-in-button" class="button button-primary" type="button">
+          Continuar con Google
+        </button>
+        <p class="muted small">La sesión se conserva solo en esta pestaña. No cargues documentos desde redes o dispositivos compartidos.</p>
+      </section>
+
+      <section id="access-panel" class="panel" hidden>
+        <p class="eyebrow">Estado de la cuenta</p>
+        <h1 id="access-title">Acceso pendiente</h1>
+        <p id="access-description"></p>
+      </section>
+
+      <div id="workspace" hidden>
+        <section class="welcome">
+          <div>
+            <p class="eyebrow">Espacio compartido</p>
+            <h1 id="welcome-title">Hola</h1>
+            <p id="profile-summary" class="muted"></p>
+          </div>
+          <span id="role-badge" class="badge"></span>
+        </section>
+
+        <section id="download-request-panel" class="panel" hidden>
+          <h2>Permiso para descargar documentos</h2>
+          <p>Tu perfil puede solicitar al administrador que habilite las descargas.</p>
+          <button id="download-request-button" class="button button-secondary" type="button">
+            Solicitar permiso
+          </button>
+        </section>
+
+        <section class="panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Comunicación</p>
+              <h2>Buzón de soporte</h2>
+            </div>
+          </div>
+          <form id="message-form" class="message-form">
+            <label for="message-subject">Asunto</label>
+            <input id="message-subject" name="subject" maxlength="200" value="Soporte" required>
+            <label for="message-body">Mensaje</label>
+            <textarea id="message-body" name="message" rows="4" maxlength="10000" required></textarea>
+            <button class="button button-primary" type="submit">Enviar mensaje</button>
+          </form>
+          <div id="messages-list" class="messages-list" aria-live="polite"></div>
+        </section>
+
+        <section id="admin-panel" class="panel" hidden>
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Administración</p>
+              <h2>Perfiles y solicitudes</h2>
+            </div>
+          </div>
+          <p class="muted">Vista de consulta. Los cambios de rol y permisos se mantienen en los clientes administrativos actuales hasta completar la protección de la cuenta propietaria para la web.</p>
+          <div id="profiles-list" class="profiles-list"></div>
+        </section>
+
+        <section class="panel migration-notice">
+          <p class="eyebrow">Expedientes y OCR</p>
+          <h2>Este módulo aún no está habilitado en la versión web gratuita</h2>
+          <p>El procesamiento de PDFs, las reglas de clasificación y el guardado en Google Drive y Sheets siguen en la aplicación actual. No subas aquí documentos hasta que esa migración esté implementada y validada.</p>
+        </section>
+      </div>
+    </main>
+    <footer class="site-footer">
+      <span>Los datos del buzón se consultan en línea y no se guardan para uso sin conexión.</span>
+    </footer>
+  </body>
+</html>

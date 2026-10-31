@@ -33,6 +33,7 @@ from urllib.parse import quote, urlencode, urlparse, parse_qs
 
 import streamlit as st
 import streamlit.components.v1 as components
+SISTEMA_WEB_MODE = os.environ.get("SISTEMA_WEB_MODE", "").strip() == "1"
 try:
     from streamlit_pdf import pdf_viewer
 except ImportError:
@@ -40,6 +41,8 @@ except ImportError:
 import pandas as pd
 import requests
 from dotenv import load_dotenv
+from document_extraction import extraer_datos_desde_texto
+from archive_status import expediente_completo, resumir_estado_archivo
 import document_rules as _document_rules
 from document_rules import (
     clasificar_tipo_caso,
@@ -205,6 +208,11 @@ def dir_recursos():
 
 def dir_datos():
     """Datos que se escriben (base local y token OAuth). En el .exe no pueden ir dentro del paquete."""
+    ruta_configurada = os.environ.get("SISTEMA_DATA_DIR", "").strip()
+    if ruta_configurada:
+        ruta = os.path.abspath(ruta_configurada)
+        os.makedirs(ruta, exist_ok=True)
+        return ruta
     if getattr(sys, 'frozen', False):
         ruta = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "SistemaDesvinculaciones")
         os.makedirs(ruta, exist_ok=True)
@@ -279,11 +287,12 @@ def preparar_ollama_en_segundo_plano():
     descargar_modelo_en_segundo_plano(OLLAMA_REQUIRED_MODEL)
 
 
-threading.Thread(
-    target=preparar_ollama_en_segundo_plano,
-    name="ollama-setup",
-    daemon=True,
-).start()
+if not SISTEMA_WEB_MODE:
+    threading.Thread(
+        target=preparar_ollama_en_segundo_plano,
+        name="ollama-setup",
+        daemon=True,
+    ).start()
 
 
 def obtener_ruta_imagen(nombre_archivo):
@@ -338,28 +347,50 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# --- VERIFICACIÓN DE ACTUALIZACIONES ---
-if 'updater_checked' not in st.session_state:
-    st.session_state.updater_checked = True
-    st.session_state.actualizacion_disponible = obtener_actualizacion_disponible()
-else:
-    actualizacion_guardada = st.session_state.get("actualizacion_disponible")
-    if actualizacion_guardada:
-        try:
-            from updater import is_newer_version, CURRENT_VERSION
-            if not is_newer_version(
-                actualizacion_guardada.get("version", ""),
-                CURRENT_VERSION,
-            ):
-                st.session_state.actualizacion_disponible = None
-        except (ImportError, TypeError, ValueError):
-            st.session_state.actualizacion_disponible = None
+if SISTEMA_WEB_MODE:
+    from web_platform.auth import autenticar_propietario_google
 
-SUPER_ADMIN_EMAIL = "juan.torob@cun.edu.co"
+    identidad_web = autenticar_propietario_google(st)
+    st.session_state.logged_user = identidad_web["email"]
+    st.session_state.logged_in = True
+    st.session_state.web_authenticated_email = identidad_web["email"]
+    os.environ["SISTEMA_WEB_OWNER_EMAIL"] = identidad_web["email"]
+    st.session_state.actualizacion_disponible = None
+    if not st.session_state.get("web_ollama_setup_started", False):
+        st.session_state.web_ollama_setup_started = True
+        threading.Thread(
+            target=preparar_ollama_en_segundo_plano,
+            name="ollama-web-setup",
+            daemon=True,
+        ).start()
+else:
+    # --- VERIFICACIÓN DE ACTUALIZACIONES ---
+    if 'updater_checked' not in st.session_state:
+        st.session_state.updater_checked = True
+        st.session_state.actualizacion_disponible = obtener_actualizacion_disponible()
+    else:
+        actualizacion_guardada = st.session_state.get("actualizacion_disponible")
+        if actualizacion_guardada:
+            try:
+                from updater import is_newer_version, CURRENT_VERSION
+                if not is_newer_version(
+                    actualizacion_guardada.get("version", ""),
+                    CURRENT_VERSION,
+                ):
+                    st.session_state.actualizacion_disponible = None
+            except (ImportError, TypeError, ValueError):
+                st.session_state.actualizacion_disponible = None
+
+SUPER_ADMIN_EMAIL = (
+    os.environ.get("SISTEMA_WEB_OWNER_EMAIL", "").strip().casefold()
+    if SISTEMA_WEB_MODE
+    else "juan.torob@cun.edu.co"
+)
 SUPABASE_URL = os.environ.get(
     "SUPABASE_URL",
     "https://ktgogijxtsidctkidrav.supabase.co",
 ).rstrip("/")
+os.environ.setdefault("SUPABASE_URL", SUPABASE_URL)
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "").strip()
 SUPABASE_OAUTH_REDIRECT = os.environ.get(
     "SUPABASE_OAUTH_REDIRECT",
@@ -603,10 +634,16 @@ CLIENT_SECRETS_FILE = os.environ.get(
     if os.path.exists(resolver_dato("credentials.json"))
     else resolver_ruta("credentials.json"),
 )
-TOKEN_FILE = resolver_dato("token.json")
+TOKEN_FILE = os.path.abspath(
+    os.environ.get("SISTEMA_GOOGLE_TOKEN_FILE", resolver_dato("token.json"))
+)
 HISTORICO_FILE = os.environ.get(
     "SISTEMA_HISTORICO_FILE",
-    resolver_ruta(os.path.join("respaldo", HISTORICO_FILENAME)),
+    (
+        resolver_dato(os.path.join("respaldo", HISTORICO_FILENAME))
+        if SISTEMA_WEB_MODE
+        else resolver_ruta(os.path.join("respaldo", HISTORICO_FILENAME))
+    ),
 )
 
 _db_origen = resolver_ruta("database_local.json")
@@ -925,7 +962,7 @@ def supabase_obtener_perfil(access_token):
 def supabase_obtener_perfiles(access_token):
     """Obtiene todos los perfiles visibles para el usuario autenticado."""
     if not supabase_configurado() or not access_token:
-        return []
+        return None
     try:
         response = requests.get(
             f"{SUPABASE_URL}/rest/v1/profiles",
@@ -933,33 +970,51 @@ def supabase_obtener_perfiles(access_token):
                 "apikey": SUPABASE_ANON_KEY,
                 "Authorization": "Bearer " + access_token,
             },
-            params={"select": "email,full_name,role,status"},
-            timeout=15,
+                params={
+                    "select": (
+                        "email,full_name,role,status,download_allowed,"
+                        "download_requested"
+                    )
+                },
+                timeout=15,
         )
     except requests.RequestException as error:
         st.warning(f"No fue posible consultar los usuarios remotos: {error}")
-        return []
+        return None
     if response.status_code != 200:
         st.warning("No fue posible cargar los usuarios desde Supabase.")
-        return []
-    return response.json()
+        return None
+    perfiles = response.json()
+    if not isinstance(perfiles, list):
+        st.error("Supabase devolvió una lista de perfiles inválida.")
+        return None
+    return perfiles
 
 
-def supabase_actualizar_perfil(access_token, email, role, status):
+def supabase_actualizar_perfil(
+    access_token,
+    email,
+    role,
+    status,
+    download_allowed=False,
+):
     """Actualiza rol y estado respetando las políticas RLS de Supabase."""
     if not supabase_configurado() or not access_token:
         return False
     try:
-        response = requests.patch(
-            f"{SUPABASE_URL}/rest/v1/profiles",
+        response = requests.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/admin_update_profile",
             headers={
                 "apikey": SUPABASE_ANON_KEY,
                 "Authorization": "Bearer " + access_token,
                 "Content-Type": "application/json",
-                "Prefer": "return=minimal",
             },
-            params={"email": f"eq.{email}"},
-            json={"role": role, "status": status},
+            json={
+                "target_email": email,
+                "new_role": role,
+                "new_status": status,
+                "new_download_allowed": bool(download_allowed),
+            },
             timeout=15,
         )
     except requests.RequestException as error:
@@ -967,6 +1022,111 @@ def supabase_actualizar_perfil(access_token, email, role, status):
         return False
     if response.status_code not in (200, 204):
         st.error("Supabase rechazó el cambio de permisos. Verifica las políticas RLS.")
+        return False
+    return True
+
+
+def supabase_solicitar_permiso_descarga(access_token):
+    if not supabase_configurado() or not access_token:
+        return False
+    try:
+        response = requests.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/request_document_download",
+            headers={
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": "Bearer " + access_token,
+                "Content-Type": "application/json",
+            },
+            json={},
+            timeout=15,
+        )
+    except requests.RequestException as error:
+        st.error(f"No fue posible registrar la solicitud compartida: {error}")
+        return False
+    if response.status_code not in (200, 204):
+        st.error("Supabase rechazó la solicitud de descarga.")
+        return False
+    return True
+
+
+def supabase_obtener_mensajes(access_token):
+    if not supabase_configurado() or not access_token:
+        return None
+    try:
+        response = requests.get(
+            f"{SUPABASE_URL}/rest/v1/support_messages",
+            headers={
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": "Bearer " + access_token,
+            },
+            params={
+                "select": "id,sender_email,subject,message,created_at,read_at",
+                "order": "created_at.desc",
+                "limit": "200",
+            },
+            timeout=15,
+        )
+    except requests.RequestException as error:
+        st.error(f"No fue posible cargar el buzón compartido: {error}")
+        return None
+    if response.status_code != 200:
+        st.error("Supabase rechazó la consulta del buzón compartido.")
+        return None
+    return response.json()
+
+
+def supabase_crear_mensaje(access_token, remitente, asunto, mensaje):
+    if not supabase_configurado() or not access_token:
+        return False
+    try:
+        response = requests.post(
+            f"{SUPABASE_URL}/rest/v1/support_messages",
+            headers={
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": "Bearer " + access_token,
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal",
+            },
+            json={
+                "sender_email": str(remitente or "").strip().casefold(),
+                "subject": str(asunto or "Soporte").strip() or "Soporte",
+                "message": str(mensaje or "").strip(),
+            },
+            timeout=15,
+        )
+    except requests.RequestException as error:
+        st.error(f"No fue posible enviar el mensaje al buzón compartido: {error}")
+        return False
+    if response.status_code not in (200, 201, 204):
+        st.error("Supabase rechazó el mensaje. Verifica que tu perfil esté activo.")
+        return False
+    return True
+
+
+def supabase_marcar_mensaje_leido(access_token, message_id):
+    if not supabase_configurado() or not access_token:
+        return False
+    try:
+        response = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/support_messages",
+            headers={
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": "Bearer " + access_token,
+                "Content-Type": "application/json",
+                "Prefer": "return=representation",
+            },
+            params={"id": f"eq.{message_id}", "read_at": "is.null"},
+            json={"read_at": datetime.datetime.now(datetime.timezone.utc).isoformat()},
+            timeout=15,
+        )
+    except requests.RequestException as error:
+        st.error(f"No fue posible actualizar el mensaje compartido: {error}")
+        return False
+    if response.status_code not in (200, 204):
+        st.error("Supabase rechazó el cambio de estado del mensaje.")
+        return False
+    if response.content and not response.json():
+        st.error("Supabase no confirmó el cambio de estado del mensaje.")
         return False
     return True
 
@@ -991,20 +1151,150 @@ def obtener_novedad_version():
 
 def obtener_usuarios_pendientes():
     """Devuelve cuentas pendientes visibles en la sesión centralizada."""
-    if st.session_state.get("supabase_access_token"):
-        perfiles = supabase_obtener_perfiles(
-            st.session_state["supabase_access_token"]
-        )
-        if perfiles:
-            return [
-                perfil for perfil in perfiles
-                if perfil.get("status") == "Pendiente"
-            ]
+    perfiles = obtener_perfiles_compartidos()
+    if perfiles is not None:
+        return [
+            perfil for perfil in perfiles
+            if perfil.get("status") == "Pendiente"
+        ]
+    if supabase_configurado():
+        return []
     return [
         {"email": email, "full_name": info.get("alias", email)}
         for email, info in st.session_state.get("usuarios", {}).items()
         if info.get("estado") == "Pendiente"
     ]
+
+
+def _administrador_web_actual():
+    return (
+        SISTEMA_WEB_MODE
+        and str(st.session_state.get("logged_user") or "").strip().casefold()
+        == SUPER_ADMIN_EMAIL
+    )
+
+
+def _listar_perfiles_servicio():
+    if not _administrador_web_actual():
+        return None
+    try:
+        from mobile_api.shared_workspace import listar_perfiles
+
+        return listar_perfiles()
+    except (ImportError, RuntimeError) as error:
+        st.error(f"No fue posible cargar los permisos compartidos: {error}")
+        return None
+
+
+def obtener_perfiles_compartidos():
+    access_token = st.session_state.get("supabase_access_token")
+    if access_token:
+        return supabase_obtener_perfiles(access_token)
+    return _listar_perfiles_servicio()
+
+
+def actualizar_perfil_compartido(email, role, status, download_allowed):
+    access_token = st.session_state.get("supabase_access_token")
+    if access_token:
+        return supabase_actualizar_perfil(
+            access_token,
+            email,
+            role,
+            status,
+            download_allowed,
+        )
+    if _administrador_web_actual():
+        try:
+            from mobile_api.shared_workspace import actualizar_perfil
+
+            actualizar_perfil(email, role, status, bool(download_allowed))
+        except (ImportError, RuntimeError, ValueError) as error:
+            st.error(f"No fue posible guardar los permisos compartidos: {error}")
+            return False
+        return True
+    st.error("Se requiere una sesión administradora conectada a Supabase.")
+    return False
+
+
+def solicitar_permiso_descarga_compartido(email):
+    access_token = st.session_state.get("supabase_access_token")
+    if access_token:
+        return supabase_solicitar_permiso_descarga(access_token)
+    if _administrador_web_actual():
+        try:
+            from mobile_api.shared_workspace import solicitar_permiso_descarga
+
+            solicitar_permiso_descarga(email)
+        except (ImportError, RuntimeError, ValueError) as error:
+            st.error(f"No fue posible registrar la solicitud compartida: {error}")
+            return False
+        return True
+    st.error("Se requiere una sesión central de Supabase para solicitar la descarga.")
+    return False
+
+
+def _crear_mensaje_servicio(remitente, asunto, mensaje):
+    if not _administrador_web_actual():
+        return False
+    try:
+        from mobile_api.shared_workspace import crear_mensaje
+
+        crear_mensaje(remitente, asunto, mensaje)
+    except (ImportError, RuntimeError, ValueError) as error:
+        st.error(f"No fue posible enviar el mensaje al buzón compartido: {error}")
+        return False
+    return True
+
+
+def obtener_mensajes_soporte():
+    access_token = st.session_state.get("supabase_access_token")
+    if access_token:
+        mensajes = supabase_obtener_mensajes(access_token)
+        if mensajes is None:
+            return None
+    elif _administrador_web_actual():
+        try:
+            from mobile_api.shared_workspace import listar_mensajes
+
+            mensajes = listar_mensajes()
+        except (ImportError, RuntimeError) as error:
+            st.error(f"No fue posible cargar el buzón compartido: {error}")
+            return None
+    else:
+        st.error(
+            "El buzón compartido requiere una sesión central de Supabase o "
+            "la sesión administradora de la web."
+        )
+        return None
+    return [
+        {
+            "id": str(item.get("id") or ""),
+            "fecha": str(item.get("created_at") or ""),
+            "remitente": str(item.get("sender_email") or ""),
+            "asunto": str(item.get("subject") or "Soporte"),
+            "mensaje": str(item.get("message") or ""),
+            "leido": bool(item.get("read_at")),
+        }
+        for item in mensajes
+    ]
+
+
+def marcar_mensaje_soporte_leido(message_id):
+    access_token = st.session_state.get("supabase_access_token")
+    if access_token:
+        return supabase_marcar_mensaje_leido(access_token, message_id)
+    if _administrador_web_actual():
+        try:
+            from mobile_api.shared_workspace import marcar_mensaje_leido
+
+            marcar_mensaje_leido(message_id)
+        except (ImportError, RuntimeError, ValueError) as error:
+            st.error(f"No fue posible actualizar el mensaje compartido: {error}")
+            return False
+        return True
+    st.error("Se requiere una sesión administradora para actualizar el buzón.")
+    return False
+
 
 def enviar_notificacion_correo(destinatario, asunto, mensaje):
     """Envía una alerta usando el Gmail autorizado en esta instalación."""
@@ -1041,6 +1331,18 @@ def notificar_super_admin(asunto, mensaje):
 
 
 def obtener_solicitudes_descarga():
+    perfiles = obtener_perfiles_compartidos()
+    if perfiles is not None:
+        return [
+            {
+                "email": str(perfil.get("email") or ""),
+                "alias": str(perfil.get("full_name") or perfil.get("email") or ""),
+            }
+            for perfil in perfiles
+            if perfil.get("download_requested")
+        ]
+    if supabase_configurado():
+        return []
     return [
         {"email": email, "alias": info.get("alias", email)}
         for email, info in st.session_state.get("usuarios", {}).items()
@@ -1049,20 +1351,23 @@ def obtener_solicitudes_descarga():
 
 
 def agregar_mensaje_soporte(remitente, asunto, mensaje):
-    """Guarda una consulta de soporte local para que la revise el Super Administrador."""
+    """Guarda una consulta en el buzón compartido del sistema."""
     texto = str(mensaje or "").strip()
     if not texto:
         return False
-    mensajes = st.session_state.setdefault("mensajes_soporte", [])
-    mensajes.append({
-        "id": secrets.token_urlsafe(12),
-        "fecha": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "remitente": remitente,
-        "asunto": str(asunto or "Soporte").strip() or "Soporte",
-        "mensaje": texto,
-        "leido": False,
-    })
-    guardar_local_json(st.session_state.db_expedientes)
+    access_token = st.session_state.get("supabase_access_token")
+    enviado = (
+        supabase_crear_mensaje(access_token, remitente, asunto, texto)
+        if access_token
+        else _crear_mensaje_servicio(remitente, asunto, texto)
+    )
+    if not enviado:
+        if not access_token and not _administrador_web_actual():
+            st.error(
+                "El mensaje no se guardó: inicia sesión con una cuenta central "
+                "de Supabase para usar el buzón compartido."
+            )
+        return False
     notificar_super_admin(
         f"[Soporte urgente] {str(asunto or 'Soporte').strip() or 'Soporte'}",
         (
@@ -1078,10 +1383,10 @@ def agregar_mensaje_soporte(remitente, asunto, mensaje):
 def sincronizar_perfiles_remotos():
     """Mezcla perfiles visibles de Supabase con la caché local de usuarios."""
     access_token = st.session_state.get("supabase_access_token")
-    if not access_token:
+    if not access_token and not _administrador_web_actual():
         return False
-    perfiles = supabase_obtener_perfiles(access_token)
-    if not perfiles:
+    perfiles = obtener_perfiles_compartidos()
+    if perfiles is None:
         return False
     usuarios = st.session_state.setdefault("usuarios", {})
     for perfil in perfiles:
@@ -1097,6 +1402,8 @@ def sincronizar_perfiles_remotos():
         actual["alias"] = perfil.get("full_name") or actual.get("alias") or email
         actual["rol"] = perfil.get("role") or "Sin Rol Asignado"
         actual["estado"] = perfil.get("status") or "Pendiente"
+        actual["permiso_descarga"] = bool(perfil.get("download_allowed"))
+        actual["solicitud_descarga"] = bool(perfil.get("download_requested"))
     guardar_local_json(st.session_state.db_expedientes)
     return True
 
@@ -1302,7 +1609,7 @@ def autenticar_google_escritorio():
     try:
         flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRETS_FILE, scopes=SCOPES)
         browser_name = obtener_navegador_oauth()
-        oauth_port = int(os.environ.get("SISTEMA_OAUTH_PORT", "8080"))
+        oauth_port = int(os.environ.get("SISTEMA_OAUTH_PORT", "0"))
         creds = flow.run_local_server(
             port=oauth_port,
             prompt="consent",
@@ -1339,9 +1646,14 @@ def revisar_configuracion_oauth():
         with open(CLIENT_SECRETS_FILE, "r", encoding="utf-8-sig") as archivo:
             config = json.load(archivo)
         cliente = config.get("web") or config.get("installed") or {}
-        oauth_port = os.environ.get("SISTEMA_OAUTH_PORT", "8080").strip()
-        if not oauth_port.isdigit() or not 1 <= int(oauth_port) <= 65535:
-            return "SISTEMA_OAUTH_PORT debe ser un puerto válido entre 1 y 65535."
+        oauth_port = os.environ.get("SISTEMA_OAUTH_PORT", "0").strip()
+        if not oauth_port.isdigit() or not 0 <= int(oauth_port) <= 65535:
+            return "SISTEMA_OAUTH_PORT debe ser 0 (automático) o un puerto entre 1 y 65535."
+        if config.get("web") and int(oauth_port) == 0:
+            return (
+                "credentials.json es de tipo Web y requiere una URL de redirección "
+                "con puerto fijo. Descarga el cliente OAuth de tipo Aplicación de escritorio."
+            )
         redirect_uris = cliente.get("redirect_uris", [])
         if config.get("web") and not any(
             uri in {
@@ -1361,6 +1673,19 @@ def revisar_configuracion_oauth():
         return "credentials.json no tiene un formato OAuth válido."
     return None
 
+def _token_uses_configured_google_client(creds):
+    if not os.path.exists(CLIENT_SECRETS_FILE):
+        return True
+    try:
+        with open(CLIENT_SECRETS_FILE, "r", encoding="utf-8-sig") as client_file:
+            client_config = json.load(client_file)
+        client = client_config.get("installed") or client_config.get("web") or {}
+        configured_client_id = str(client.get("client_id") or "").strip()
+    except (OSError, json.JSONDecodeError, AttributeError, TypeError):
+        return False
+    return bool(configured_client_id and creds.client_id == configured_client_id)
+
+
 def get_google_credentials():
     creds = None
     if os.path.exists(TOKEN_FILE):
@@ -1368,6 +1693,8 @@ def get_google_credentials():
             # Se carga el conjunto real del token para poder detectar si requiere
             # una nueva autorización (por ejemplo, el permiso gmail.send).
             creds = Credentials.from_authorized_user_file(TOKEN_FILE)
+            if creds and not _token_uses_configured_google_client(creds):
+                return None
             if creds and creds.valid:
                 return creds
             if creds and creds.expired and creds.refresh_token:
@@ -2952,7 +3279,7 @@ def ocr_respaldo_primera_pagina(contenido):
 
 
 def extraer_datos_pdf(contenido, texto=None):
-    """Extrae metadatos de PDFs digitales; devuelve vacío si es un escaneo sin OCR."""
+    """Extracts administrative fields with the shared desktop/mobile parser."""
     texto = normalizar_errores_ocr(
         extraer_texto_pdf(contenido) if texto is None else texto
     )
@@ -2968,250 +3295,7 @@ def extraer_datos_pdf(contenido, texto=None):
         texto_respaldo = ocr_respaldo_primera_pagina(contenido)
         if texto_respaldo:
             texto = normalizar_errores_ocr(f"{texto} {texto_respaldo}")
-    if not texto:
-        return {}
-    patrones = {
-        "radicado_padre": [
-            r"\b(?:rad|radicado|radicaci[oó]n|orfeo)\s*(?:padre|principal)?\s*(?:no\.?)?\s*[:.#\-]?\s*([A-Z0-9][A-Z0-9./\-]{7,})\b",
-            r"\b(20\d{16})\b",
-        ],
-        "placa": [
-            r"(?:placa|placas|matr[ií]cula|matricula|veh[ií]culo)\s*[:#\-]?\s*([A-Z]{3}\s*[-]?\s*\d{3})\b",
-            r"\b([A-Z]{3}-?\d{3})\b",
-        ],
-        "fecha_solicitud": [
-            r"(?:fecha\s*(?:de\s*)?(?:creaci[oó]n|radicaci[oó]n|solicitud|recibido))\s*[:#\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
-            r"\b(\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\s+de\s+20\d{2})\b",
-            r"\b(\d{1,2}\s+(?:de\s+)?(?:ene(?:ro)?|feb(?:rero)?|mar(?:zo)?|"
-            r"abr(?:il)?|may(?:o)?|jun(?:io)?|jul(?:io)?|ago(?:sto)?|"
-            r"sep(?:tiembre)?|set(?:iembre)?|oct(?:ubre)?|nov(?:iembre)?|"
-            r"dic(?:iembre)?)\s+(?:de\s+)?20\d{2})\b",
-            r"\b((?:0[1-9]|[12][0-9]|3[01])[-/](?:0[1-9]|1[012])[-/](?:20\d{2}))\b",
-        ],
-        "fecha_radicacion": [
-            r"(?:fecha\s+de\s+)?radicaci[oó]n\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
-            r"(?:fecha\s+de\s+)?radicaci[oó]n\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
-        ],
-        "fecha_recurso": [
-            r"fecha\s+(?:de\s+)?recurso\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
-            r"fecha\s+(?:de\s+)?recurso\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
-        ],
-        "fecha_resolucion": [
-            r"(?:fecha\s+(?:de\s+)?resoluci[oó]n|resoluci[oó]n[^.]{0,80}?\b(?:del|de fecha))\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
-            r"fecha\s+(?:de\s+)?resoluci[oó]n\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
-        ],
-        "fecha_notificacion": [
-            r"(?:fecha\s+(?:de\s+)?notificaci[oó]n|notificaci[oó]n[^.]{0,80}?\b(?:del|de fecha))\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
-            r"fecha\s+(?:de\s+)?notificaci[oó]n\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
-        ],
-        "fecha_ejecutoria": [
-            r"fecha\s+(?:de\s+)?(?:constancia\s+de\s+)?ejecutoria\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
-            r"fecha\s+(?:de\s+)?(?:constancia\s+de\s+)?ejecutoria\s*[:#\-]?\s*(?:de\s+)?(\d{1,2}\s+(?:de\s+)?[A-Za-záéíóú]+(?:\s+de)?\s+20\d{2})",
-        ],
-        "correo": [
-            r"\b([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})\b",
-        ],
-        "nit": [
-            r"\b(?:NIT|NIT\.?|n\.i\.t\.?)\s*[:#.\-]?\s*([0-9][0-9.\s]{5,14}(?:\s*[\-–]\s*[0-9])?)\b",
-        ],
-        "cedula": [
-            r"\b(?:c[eé]dula|c\.c\.|identificaci[oó]n)\s*[:#\-]?\s*([0-9][0-9.\s]{5,14})\b",
-        ],
-        "empresa": [
-            r"\bempresa\s*[:#\-]?\s*([^|]{3,100}?)(?=\s+(?:NIT|propietario|placa|radicado|resoluci[oó]n|correo)\b|$)",
-            r"\bempresa\s+de\s+transportes?\s+([^|]{3,100}?)(?=\s+(?:NIT|contrato|resoluci[oó]n|placa)\b|$)",
-            r"\b(EMPRESA\s+DE\s+TRANSPORTES?\s+[A-Z0-9ÁÉÍÓÚÑ .,&-]{4,100}?)(?=\s+(?:NIT|RESOLUCI|CONTRATO|PLACA)\b|$)",
-        ],
-        "propietario": [
-            r"\bpropietario(?:\s+del\s+veh[ií]culo)?\s*[:#\-]?\s*([^|]{3,100}?)(?=\s+(?:c[eé]dula|CC|placa|direcci[oó]n|resoluci[oó]n|correo|NIT)\b|$)",
-            r"\b(?:representante\s+legal|gerente)\s*[:#\-]?\s*([A-ZÁÉÍÓÚÑ][^|]{3,100}?)(?=\s+(?:identificado|con\s+c[eé]dula|NIT|solicito)\b)",
-        ],
-        "direccion_empresa": [
-            r"\bdirecci[oó]n\s+(?:de\s+)?empresa\s*[:#\-]?\s*([^|]{5,150}?)(?=\s+(?:direcci[oó]n|propietario|NIT|radicado|nueva\s+empresa)\b|$)",
-        ],
-        "direccion_propietario": [
-            r"\bdirecci[oó]n\s+(?:del\s+)?propietario\s*[:#\-]?\s*([^|]{5,150}?)(?=\s+(?:propietario|c[eé]dula|placa|radicado|nueva\s+empresa)\b|$)",
-        ],
-        "nueva_empresa": [
-            r"\bnueva\s+empresa\s*[:#\-]?\s*([^|]{3,120}?)(?=\s+(?:NIT|radicado|placa|fecha)\b|$)",
-        ],
-        "tipo_notificacion": [
-            r"\bnotificaci[oó]n\s+(?:por\s+)?(personal|citación|citaci[oó]n|aviso|publicaci[oó]n|electrónica|electronica|correo)\b",
-        ],
-        "funcionario": [
-            r"\bfuncionario\s+(?:que\s+)?desvincula\s*[:#\-]\s*([^|]{3,100}?)(?=\s+(?:fecha|observaci[oó]n|estado)\b|$)",
-        ],
-        "recurso": [
-            r"\b(recurso(?:\s+de\s+(?:reposici[oó]n|apelaci[oó]n))?)\b",
-        ],
-        "resolucion": [
-            r"\b(?:resoluci[oó]n|acto\s+administrativo)\s*(?:No\.?|N[°ºo]\.?)?\s*[:#\-]?\s*([A-Z0-9./\-]{4,40})\b",
-        ],
-    }
-    meses = {
-        "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5,
-        "junio": 6, "julio": 7, "agosto": 8, "septiembre": 9,
-        "setiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12,
-        "ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6,
-        "jul": 7, "ago": 8, "sep": 9, "set": 9, "oct": 10, "nov": 11,
-        "dic": 12,
-    }
-    datos = {}
-    for campo, opciones in patrones.items():
-        for patron in opciones:
-            coincidencia = re.search(patron, texto, flags=re.IGNORECASE)
-            if coincidencia:
-                valor = coincidencia.group(1).strip(" .,:;")
-                if campo == "radicado_padre":
-                    valor = re.sub(r"\s+", "", valor).upper()
-                if campo == "placa":
-                    valor = re.sub(r"[\s-]", "", valor).upper()
-                elif campo.startswith("fecha_"):
-                    fecha_texto = valor.lower()
-                    fecha_larga = re.fullmatch(
-                        r"(\d{1,2})\s+(?:de\s+)?([a-záéíóú]+)\s+(?:de\s+)?(20\d{2})",
-                        fecha_texto,
-                    )
-                    if fecha_larga:
-                        dia, mes, anio = fecha_larga.groups()
-                        valor = f"{anio}-{meses.get(mes, 0):02d}-{int(dia):02d}"
-                    else:
-                        partes = re.split(r"[/-]", valor)
-                        if len(partes) == 3:
-                            if len(partes[0]) == 4:
-                                valor = "-".join(partes)
-                            else:
-                                dia, mes, anio = partes
-                                if len(anio) == 2:
-                                    anio = "20" + anio
-                                valor = f"{anio}-{mes.zfill(2)}-{dia.zfill(2)}"
-                elif campo == "nit":
-                    valor = re.sub(r"\D", "", valor)
-                elif campo == "cedula":
-                    valor = re.sub(r"\D", "", valor)
-                elif campo in {
-                    "correo", "nit", "cedula", "empresa", "propietario",
-                    "direccion_empresa", "direccion_propietario", "nueva_empresa",
-                    "tipo_notificacion", "funcionario", "resolucion",
-                }:
-                    valor = re.sub(r"\s+", " ", valor).strip()
-                datos[campo] = valor
-                break
-    if not datos.get("fecha_radicacion"):
-        coincidencia_fecha_radicacion = re.search(
-            r"radicaci[oó?]n[^0-9]{0,30}"
-            r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
-            texto,
-            flags=re.IGNORECASE,
-        )
-        if coincidencia_fecha_radicacion:
-            dia_mes_anio = coincidencia_fecha_radicacion.group(1).split("/")
-            if len(dia_mes_anio) == 1:
-                dia_mes_anio = coincidencia_fecha_radicacion.group(1).split("-")
-            if len(dia_mes_anio) == 3:
-                if len(dia_mes_anio[0]) == 4:
-                    datos["fecha_radicacion"] = "-".join(dia_mes_anio)
-                else:
-                    dia, mes, anio = dia_mes_anio
-                    datos["fecha_radicacion"] = (
-                        f"{'20' + anio if len(anio) == 2 else anio}-"
-                        f"{mes.zfill(2)}-{dia.zfill(2)}"
-                    )
-    coincidencia_empresa = re.search(
-        r"\bEMPRESA\s+DE\s+TRANSPORTES?\s+"
-        r"[A-Z0-9ÁÉÍÓÚÑ .,&-]{4,100}",
-        texto,
-        flags=re.IGNORECASE,
-    )
-    if coincidencia_empresa:
-        empresa_detectada = re.split(
-            r"\s+(?:NIT|RESOLUCI\w*|NOTIFICACI\w*|CONTRATO|PLACA)\b",
-            coincidencia_empresa.group(0),
-            maxsplit=1,
-            flags=re.IGNORECASE,
-        )[0].strip(" .,:;-")
-        if len(empresa_detectada) >= len(str(datos.get("empresa", ""))):
-            datos["empresa"] = empresa_detectada
-    if datos.get("empresa"):
-        datos["empresa"] = re.split(
-            r"\s+(?:NIT|RESOLUCI\w*|NOTIFICACI\w*|CONTRATO|PLACA)\b",
-            str(datos["empresa"]),
-            maxsplit=1,
-            flags=re.IGNORECASE,
-        )[0].strip(" .,:;-")
-    radicado_extraido = str(datos.get("radicado_padre", "")).strip()
-    if radicado_extraido and not radicado_padre_valido(radicado_extraido):
-        datos.pop("radicado_padre", None)
-        datos.pop("radicado_revision", None)
-        radicado_extraido = ""
-    if radicado_extraido and not re.fullmatch(r"20\d{16}", radicado_extraido):
-        datos["radicado_revision"] = (
-            f"Revisar radicado detectado: {radicado_extraido}. "
-            "Confirma el número completo en el formulario."
-        )
-    if re.fullmatch(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", str(datos.get("resolucion", ""))):
-        coincidencia_resolucion = re.search(
-            r"\bresoluci[oó]n\s+(?:No\.?|N[°ºo]\.?)\s*[:#\-]?\s*([A-Z0-9-]{3,40})\b",
-            texto,
-            flags=re.IGNORECASE,
-        )
-        if coincidencia_resolucion:
-            datos["resolucion"] = coincidencia_resolucion.group(1).strip()
-
-    def fecha_en_contexto(etiquetas):
-        etiqueta = "|".join(etiquetas)
-        coincidencia = re.search(
-            rf"(?:{etiqueta}).{{0,100}}?"
-            r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})",
-            texto,
-            flags=re.IGNORECASE,
-        )
-        if not coincidencia:
-            return ""
-        valor = coincidencia.group(1)
-        partes = re.split(r"[/-]", valor)
-        if len(partes) != 3:
-            return ""
-        if len(partes[0]) == 4:
-            return "-".join(partes)
-        dia, mes, anio = partes
-        return f"{'20' + anio if len(anio) == 2 else anio}-{mes.zfill(2)}-{dia.zfill(2)}"
-
-    for campo, etiquetas in {
-        "fecha_resolucion": (r"resoluci[oó]n",),
-        "fecha_notificacion": (r"notificaci[oó]n",),
-        "fecha_ejecutoria": (r"ejecutoria",),
-        "fecha_recurso": (r"recurso",),
-    }.items():
-        if not datos.get(campo):
-            fecha_contexto = fecha_en_contexto(etiquetas)
-            if fecha_contexto:
-                datos[campo] = fecha_contexto
-    if not datos.get("fecha_solicitud"):
-        fecha_solicitud = re.search(
-            r"\b(\d{1,2}[/-]\d{1,2}[/-]20\d{2}|20\d{2}[/-]\d{1,2}[/-]\d{1,2})\b",
-            texto,
-        )
-        if fecha_solicitud:
-            valor = fecha_solicitud.group(1)
-            partes = re.split(r"[/-]", valor)
-            if len(partes) == 3:
-                if len(partes[0]) == 4:
-                    datos["fecha_solicitud"] = "-".join(partes)
-                else:
-                    dia, mes, anio = partes
-                    datos["fecha_solicitud"] = f"{anio}-{mes.zfill(2)}-{dia.zfill(2)}"
-    for campo in (
-        "empresa",
-        "propietario",
-        "direccion_empresa",
-        "direccion_propietario",
-        "nueva_empresa",
-    ):
-        if datos.get(campo) and valor_ocr_sospechoso(datos[campo]):
-            datos.pop(campo, None)
-    return datos
-
+    return extraer_datos_desde_texto(texto)
 
 def unir_archivos_pdf(archivos):
     """Une PDF en el orden recibido y devuelve sus bytes, o None si no es posible."""
@@ -4476,6 +4560,55 @@ def leer_registros_sheets(service):
         st.error(f"Error al leer Google Sheets: {e}")
         return []
 
+
+def contar_expedientes_en_filas_sheet(filas):
+    """Cuenta radicados padre únicos presentes en la hoja operacional."""
+    if not filas:
+        return None
+
+    encabezados = [normalizar_campo_sheet(valor) for valor in filas[0]]
+    if not any(
+        encabezado in {"RAD PADRE", "RADICADO PADRE"}
+        for encabezado in encabezados
+    ):
+        return None
+
+    radicados = {
+        radicado
+        for fila in filas[1:]
+        if (
+            radicado := _valor_fila_normalizada(
+                fila,
+                encabezados,
+                "RAD PADRE",
+                "RADICADO PADRE",
+            )
+        )
+    }
+    return len(radicados)
+
+
+def resumir_estado_archivo_desde_filas_sheet(filas):
+    """Calculate archive metrics from the current operational sheet values."""
+    if not filas:
+        return None
+    encabezados = [normalizar_campo_sheet(valor) for valor in filas[0]]
+    if not any(
+        encabezado in {"RAD PADRE", "RADICADO PADRE"}
+        for encabezado in encabezados
+    ):
+        return None
+    registros = [
+        {
+            encabezados[indice]: valor
+            for indice, valor in enumerate(fila)
+            if indice < len(encabezados)
+        }
+        for fila in filas[1:]
+    ]
+    return resumir_estado_archivo(registros)
+
+
 def guardar_local_json(data):
     try:
         contenido = {
@@ -4492,6 +4625,7 @@ def guardar_local_json(data):
 def cargar_base_datos_inicial(service):
     db_cargada = {}
     usuarios_cargados = {}
+    st.session_state.sheet_case_count = None
 
     if os.path.exists(LOCAL_DB_FILE):
         try:
@@ -4513,6 +4647,20 @@ def cargar_base_datos_inicial(service):
 
     if service:
         filas = leer_registros_sheets(service)
+        st.session_state.sheet_case_count = contar_expedientes_en_filas_sheet(filas)
+        st.session_state.archive_summary = resumir_estado_archivo_desde_filas_sheet(
+            filas
+        )
+        st.session_state.archive_summary_updated_at = (
+            datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
+            if st.session_state.archive_summary is not None
+            else ""
+        )
+        if filas and st.session_state.sheet_case_count is None:
+            st.error(
+                "No se pudo contar la hoja operacional: falta la columna "
+                "'RAD PADRE' o 'RADICADO PADRE'."
+            )
         if filas and len(filas) > 1:
             encabezados_sheet = [
                 normalizar_campo_sheet(valor) for valor in filas[0]
@@ -4759,13 +4907,58 @@ def importar_base_historica():
     return importados, duplicados, len(registros)
 
 # --- INICIALIZACIÓN ---
+if SISTEMA_WEB_MODE:
+    credenciales_web = get_google_credentials()
+    correo_credenciales_web = (
+        obtener_email_google(credenciales_web)
+        if credenciales_web
+        else None
+    )
+    if (
+        not correo_credenciales_web
+        or correo_credenciales_web.casefold()
+        != st.session_state.web_authenticated_email.casefold()
+    ):
+        st.error(
+            "El token de Google del servidor no corresponde a la cuenta "
+            "autorizada para esta web. Configura las credenciales del mismo "
+            "correo antes de usar Drive y Sheets."
+        )
+        st.stop()
+
 drive_service = get_drive_service()
 sheets_service = get_sheets_service()
+if SISTEMA_WEB_MODE and (not drive_service or not sheets_service):
+    st.error(
+        "No se pudieron conectar las credenciales del servidor con Google Drive "
+        "y Google Sheets. Verifica el token de Google montado y sus permisos."
+    )
+    st.stop()
 
 if 'db_expedientes' not in st.session_state or 'usuarios' not in st.session_state:
     exp_data, usr_data = cargar_base_datos_inicial(sheets_service)
     st.session_state.db_expedientes = exp_data
     st.session_state.usuarios = usr_data
+if "archive_summary" not in st.session_state:
+    filas_sheet = leer_registros_sheets(sheets_service) if sheets_service else []
+    st.session_state.archive_summary = resumir_estado_archivo_desde_filas_sheet(
+        filas_sheet
+    )
+    st.session_state.archive_summary_updated_at = (
+        datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
+        if st.session_state.archive_summary is not None
+        else ""
+    )
+if "sheet_case_count" not in st.session_state:
+    filas_sheet = leer_registros_sheets(sheets_service) if sheets_service else []
+    st.session_state.sheet_case_count = contar_expedientes_en_filas_sheet(
+        filas_sheet
+    )
+    if filas_sheet and st.session_state.sheet_case_count is None:
+        st.error(
+            "No se pudo contar la hoja operacional: falta la columna "
+            "'RAD PADRE' o 'RADICADO PADRE'."
+        )
 if "mensajes_soporte" not in st.session_state:
     st.session_state.mensajes_soporte = []
 if "pendientes" not in st.session_state:
@@ -4829,6 +5022,8 @@ def cerrar_sesion():
     st.session_state.navegacion = "Inicio"
     st.session_state.supabase_access_token = None
     st.session_state.google_auto_login_disabled = True
+    if SISTEMA_WEB_MODE:
+        st.logout()
     st.rerun()
 
 def calcular_ubicacion(n):
@@ -4876,19 +5071,7 @@ def siguiente_numero_expediente():
     return max(ids) + 1 if ids else 1
 
 def calcular_estado_tramite(registro):
-    completo = bool(
-        registro.get("radicado_padre")
-        and registro.get("fecha_solicitud")
-        and registro.get("qx_verificado")
-        and registro.get("resolucion")
-        and registro.get("fecha_resolucion")
-        and registro.get("tipo_notificacion")
-        and registro.get("fecha_notificacion")
-        and registro.get("fecha_ejecutoria")
-        and registro.get("remitido")
-        and registro.get("fecha_remision_registro")
-    )
-    return "COMPLETO" if completo else "EN TRÁMITE"
+    return "COMPLETO" if expediente_completo(registro) else "EN TRÁMITE"
 
 def cuenta_activa(usuario):
     if not usuario:
@@ -5048,17 +5231,95 @@ if not st.session_state.get("logged_in", False):
 
         with tab_google:
             st.write("Iniciar sesión o ingresar con su cuenta de Google vinculada:")
+            if supabase_configurado() and st.button(
+                "Iniciar con la cuenta compartida del sistema",
+                key="btn_google_supabase",
+                width="stretch",
+            ):
+                with st.spinner("Validando la cuenta y sus permisos compartidos..."):
+                    remote_session = supabase_autenticar_google()
+                if remote_session:
+                    access_token = remote_session.get("access_token")
+                    perfil_remoto = supabase_obtener_perfil(access_token)
+                    if not perfil_remoto:
+                        st.error(
+                            "La cuenta autenticada no tiene un perfil compartido. "
+                            "Regístrala desde el programa y solicita su aprobación."
+                        )
+                    else:
+                        email_remoto = str(perfil_remoto.get("email") or "").strip().casefold()
+                        usuario = st.session_state.setdefault("usuarios", {}).setdefault(
+                            email_remoto,
+                            {
+                                "alias": perfil_remoto.get("full_name") or email_remoto,
+                                "password": "",
+                                "metodo": "Supabase Auth",
+                                "fecha_registro": str(datetime.date.today()),
+                            },
+                        )
+                        usuario["alias"] = perfil_remoto.get("full_name") or email_remoto
+                        usuario["rol"] = perfil_remoto.get("role", "Sin Rol Asignado")
+                        usuario["estado"] = perfil_remoto.get("status", "Pendiente")
+                        usuario["permiso_descarga"] = bool(
+                            perfil_remoto.get("download_allowed")
+                        )
+                        usuario["solicitud_descarga"] = bool(
+                            perfil_remoto.get("download_requested")
+                        )
+                        st.session_state.supabase_access_token = access_token
+                        st.session_state.logged_user = email_remoto
+                        st.session_state.logged_in = True
+                        guardar_local_json(st.session_state.db_expedientes)
+                        st.rerun()
             oauth_warning = revisar_configuracion_oauth() if os.path.exists(CLIENT_SECRETS_FILE) else None
             if oauth_warning:
                 st.warning(oauth_warning)
             st.caption("La autorización se abrirá con Microsoft Edge o Chrome, no necesariamente con tu navegador predeterminado.")
+
+            def completar_inicio_sesion_google(creds):
+                user_email = obtener_email_google(creds)
+                if not user_email:
+                    st.error(
+                        "Google no devolvió un correo verificable. Revisa la conexión "
+                        "y vuelve a autorizar la cuenta."
+                    )
+                    return
+                usuarios = st.session_state.get("usuarios", {})
+                if user_email not in usuarios:
+                    usuarios[user_email] = {
+                        "alias": user_email,
+                        "password": "",
+                        "rol": "Super Administrador" if user_email == SUPER_ADMIN_EMAIL else "Sin Rol Asignado",
+                        "estado": "Activo" if user_email == SUPER_ADMIN_EMAIL else "Pendiente",
+                        "metodo": "Google",
+                        "fecha_registro": str(datetime.date.today()),
+                    }
+                    st.session_state.usuarios = usuarios
+                    guardar_local_json(st.session_state.db_expedientes)
+                if not cuenta_activa(usuarios.get(user_email)):
+                    st.warning("Su cuenta de Google está pendiente de activación.")
+                    return
+                st.session_state.logged_user = user_email
+                st.session_state.logged_in = True
+                st.rerun()
             
             # El token local de Google se conserva para Drive y Sheets.
             has_token = os.path.exists(TOKEN_FILE)
 
             if has_token:
                 credenciales_actuales = get_google_credentials()
-                if credenciales_actuales and not credenciales_actuales.has_scopes(
+                if not credenciales_actuales:
+                    st.warning(
+                        "La sesión guardada no se pudo renovar o pertenece a un "
+                        "cliente OAuth anterior. Vuelve a autorizar Google para "
+                        "restablecer Drive y Sheets."
+                    )
+                    if st.button("Volver a autorizar Google", width="stretch"):
+                        with st.spinner("Esperando la autorización de Google..."):
+                            creds = autenticar_google_escritorio()
+                        if creds:
+                            completar_inicio_sesion_google(creds)
+                elif not credenciales_actuales.has_scopes(
                     ["https://www.googleapis.com/auth/gmail.send"]
                 ):
                     st.info(
@@ -5066,30 +5327,14 @@ if not st.session_state.get("logged_in", False):
                         "la autorización de Google en este equipo."
                     )
                     if st.button("Actualizar autorización para notificaciones"):
-                        autenticar_google_escritorio()
-                        st.rerun()
-                if st.button("🟢 Ingresar con Google (Sesión Activa)", width="stretch"):
-                    creds = get_google_credentials()
-                    if creds:
-                        user_email = obtener_email_google(creds)
-                        usuarios = st.session_state.get("usuarios", {})
-                        if user_email not in usuarios:
-                            usuarios[user_email] = {
-                                "alias": user_email,
-                                "password": "",
-                                "rol": "Super Administrador" if user_email == SUPER_ADMIN_EMAIL else "Sin Rol Asignado",
-                                "estado": "Activo" if user_email == SUPER_ADMIN_EMAIL else "Pendiente",
-                                "metodo": "Google",
-                                "fecha_registro": str(datetime.date.today()),
-                            }
-                            st.session_state.usuarios = usuarios
-                            guardar_local_json(st.session_state.db_expedientes)
-                        if not cuenta_activa(usuarios.get(user_email)):
-                            st.warning("Su cuenta de Google está pendiente de activación.")
-                        else:
-                            st.session_state.logged_user = user_email
-                            st.session_state.logged_in = True
-                            st.rerun()
+                        creds = autenticar_google_escritorio()
+                        if creds:
+                            completar_inicio_sesion_google(creds)
+                if credenciales_actuales and st.button(
+                    "Ingresar con Google (sesión activa)",
+                    width="stretch",
+                ):
+                    completar_inicio_sesion_google(credenciales_actuales)
             else:
                 st.markdown("""
                     <style>
@@ -5117,25 +5362,7 @@ if not st.session_state.get("logged_in", False):
                     with st.spinner("Iniciando autenticación... Por favor, complete el inicio de sesión en el navegador que se abrirá automáticamente."):
                         creds_res = autenticar_google_escritorio()
                         if creds_res:
-                                user_email = obtener_email_google(creds_res)
-                                usuarios = st.session_state.get("usuarios", {})
-                                if user_email not in usuarios:
-                                    usuarios[user_email] = {
-                                        "alias": user_email,
-                                        "password": "",
-                                        "rol": "Super Administrador" if user_email == SUPER_ADMIN_EMAIL else "Sin Rol Asignado",
-                                        "estado": "Activo" if user_email == SUPER_ADMIN_EMAIL else "Pendiente",
-                                        "metodo": "Google",
-                                        "fecha_registro": str(datetime.date.today()),
-                                    }
-                                    st.session_state.usuarios = usuarios
-                                    guardar_local_json(st.session_state.db_expedientes)
-                                if not cuenta_activa(usuarios.get(user_email)):
-                                    st.warning("Su cuenta de Google está pendiente de activación.")
-                                else:
-                                    st.session_state.logged_user = user_email
-                                    st.session_state.logged_in = True
-                                    st.rerun()
+                            completar_inicio_sesion_google(creds_res)
 
         with tab_register:
             with st.form("form_reg"):
@@ -5305,8 +5532,9 @@ with st.sidebar:
         if opc == "Buzón de Mensajes" and es_super_admin:
             pendientes = len(obtener_usuarios_pendientes())
             solicitudes = len(obtener_solicitudes_descarga())
+            mensajes_compartidos = obtener_mensajes_soporte()
             soporte = sum(
-                1 for mensaje in st.session_state.get("mensajes_soporte", [])
+                1 for mensaje in (mensajes_compartidos or [])
                 if not mensaje.get("leido")
             )
             total_avisos = pendientes + solicitudes + soporte
@@ -5363,30 +5591,59 @@ if st.session_state.navegacion == "Inicio":
     mosaico.append((IMG_CARD_PERFIL, "Mi Perfil", f"?nav={quote('Mi Perfil')}"))
     render_launcher_grid(mosaico)
 
-    expedientes = list(st.session_state.db_expedientes.values())
-    total_expedientes = len(expedientes)
-    completos = sum(
-        1 for expediente in expedientes
-        if expediente.get("estado") == "COMPLETO"
-    )
-    pendientes_documentales = sum(
-        1 for expediente in expedientes
-        if documentos_faltantes(expediente)
-    )
-    documentos_drive = sum(
-        len(expediente.get("canvas_paginas", []))
-        for expediente in expedientes
-    )
     st.markdown('<div class="launcher-title">Estado del archivo</div>', unsafe_allow_html=True)
+    if st.button(
+        "Actualizar estado desde Google Sheets",
+        key="actualizar_estado_archivo",
+        disabled=not sheets_service,
+    ):
+        filas_sheet = leer_registros_sheets(sheets_service)
+        st.session_state.sheet_case_count = contar_expedientes_en_filas_sheet(
+            filas_sheet
+        )
+        st.session_state.archive_summary = resumir_estado_archivo_desde_filas_sheet(
+            filas_sheet
+        )
+        if st.session_state.archive_summary is None:
+            st.session_state.archive_summary_updated_at = ""
+            st.error(
+                "No se pudo actualizar el estado del archivo desde Google Sheets. "
+                "Verifica la conexión y que la hoja tenga la columna de radicado padre."
+            )
+        else:
+            st.session_state.archive_summary_updated_at = (
+                datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
+            )
+
+    archive_summary = st.session_state.get("archive_summary")
     resumen_1, resumen_2, resumen_3, resumen_4 = st.columns(4)
-    resumen_1.metric("Expedientes", total_expedientes)
-    resumen_2.metric("Completos", completos)
-    resumen_3.metric("Con faltantes", pendientes_documentales)
-    resumen_4.metric("Documentos registrados", documentos_drive)
-    st.caption(
-        "El escritorio muestra el estado de la base local sincronizada. "
-        "Los documentos y sus enlaces se consultan desde el expediente y Google Drive."
+    resumen_1.metric(
+        "Expedientes",
+        archive_summary["total_expedientes"] if archive_summary else "No disponible",
     )
+    resumen_2.metric(
+        "Completos",
+        archive_summary["completos"] if archive_summary else "No disponible",
+    )
+    resumen_3.metric(
+        "Con faltantes",
+        archive_summary["con_faltantes"] if archive_summary else "No disponible",
+    )
+    resumen_4.metric(
+        "Documentos registrados",
+        archive_summary["documentos_registrados"] if archive_summary else "No disponible",
+    )
+    if archive_summary is None:
+        st.warning(
+            "El estado del archivo no está disponible. Actualiza desde Google Sheets; "
+            "no se mostrarán cifras de una caché local como si fueran actuales."
+        )
+    else:
+        st.caption(
+            "Todos los indicadores se calculan con los expedientes y metadatos "
+            "de Google Sheets. Última actualización: "
+            f"{st.session_state.get('archive_summary_updated_at') or 'no disponible'}."
+        )
 
 elif st.session_state.navegacion == "Entrada de Expedientes":
     if st.button("⬅️ Volver al Inicio"):
@@ -5398,7 +5655,7 @@ elif st.session_state.navegacion == "Entrada de Expedientes":
     if not es_modificador:
         st.warning("Rol de Visualizador: Modo de solo lectura.")
     else:
-        editor_pdf = ruta_editor_pdf()
+        editor_pdf = "" if SISTEMA_WEB_MODE else ruta_editor_pdf()
         if editor_pdf:
             if st.button(
                 "Abrir Editor PDF local",
@@ -7560,11 +7817,17 @@ elif st.session_state.navegacion == "Consulta & Archivo":
                                 disabled=solicitud_descarga_pendiente(datos_usuario),
                                 key=f"request_download_{exp['radicado_padre']}_{p['pagina_id']}",
                             ):
-                                datos_usuario["solicitud_descarga"] = True
-                                st.session_state.usuarios[correo_activo] = datos_usuario
-                                guardar_local_json(st.session_state.db_expedientes)
-                                st.success("Solicitud enviada al Super Administrador.")
-                                st.rerun()
+                                enviada = (
+                                    solicitar_permiso_descarga_compartido(correo_activo)
+                                    if supabase_configurado()
+                                    else True
+                                )
+                                if enviada:
+                                    datos_usuario["solicitud_descarga"] = True
+                                    st.session_state.usuarios[correo_activo] = datos_usuario
+                                    guardar_local_json(st.session_state.db_expedientes)
+                                    st.success("Solicitud enviada al Super Administrador.")
+                                    st.rerun()
                 else:
                     cp2.caption("Sin vista previa disponible")
 
@@ -7660,11 +7923,17 @@ elif st.session_state.navegacion == "Consulta & Archivo":
                                     disabled=solicitud_descarga_pendiente(datos_usuario),
                                     key=f"request_download_multi_{exp.get('radicado_padre')}_{p.get('pagina_id')}",
                                 ):
-                                    datos_usuario["solicitud_descarga"] = True
-                                    st.session_state.usuarios[correo_activo] = datos_usuario
-                                    guardar_local_json(st.session_state.db_expedientes)
-                                    st.success("Solicitud enviada al Super Administrador.")
-                                    st.rerun()
+                                    enviada = (
+                                        solicitar_permiso_descarga_compartido(correo_activo)
+                                        if supabase_configurado()
+                                        else True
+                                    )
+                                    if enviada:
+                                        datos_usuario["solicitud_descarga"] = True
+                                        st.session_state.usuarios[correo_activo] = datos_usuario
+                                        guardar_local_json(st.session_state.db_expedientes)
+                                        st.success("Solicitud enviada al Super Administrador.")
+                                        st.rerun()
     elif criterio:
         st.warning("No se encontró ningún expediente por ese radicado o placa.")
 
@@ -7681,8 +7950,8 @@ elif st.session_state.navegacion == "Buzón de Mensajes":
 
     st.subheader("Soporte")
     st.caption(
-        "Envía una consulta al Super Administrador. Las notificaciones quedan "
-        "registradas en el buzón local del sistema."
+        "Envía una consulta al Super Administrador. Los mensajes se comparten "
+        "entre el programa, la web y la aplicación móvil."
     )
     with st.form("form_mensaje_soporte"):
         asunto_soporte = st.text_input("Asunto", placeholder="Ej: Documento sin petición")
@@ -7701,24 +7970,29 @@ elif st.session_state.navegacion == "Buzón de Mensajes":
             st.rerun()
 
     if es_super_admin:
-        mensajes = st.session_state.get("mensajes_soporte", [])
+        mensajes = obtener_mensajes_soporte()
         st.subheader("Consultas de soporte")
-        pendientes_soporte = [mensaje for mensaje in mensajes if not mensaje.get("leido")]
-        if pendientes_soporte:
-            st.warning(f"Hay {len(pendientes_soporte)} consulta(s) sin leer.")
-        for mensaje in reversed(mensajes):
-            with st.expander(
-                f"{mensaje.get('asunto', 'Soporte')} · {mensaje.get('fecha', '')}"
-            ):
-                st.write(f"**De:** {mensaje.get('remitente', '')}")
-                st.write(mensaje.get("mensaje", ""))
-                if not mensaje.get("leido") and st.button(
-                    "Marcar como leída",
-                    key=f"read_support_{mensaje.get('id')}",
+        if mensajes is not None:
+            pendientes_soporte = [
+                mensaje for mensaje in mensajes if not mensaje.get("leido")
+            ]
+            if pendientes_soporte:
+                st.warning(f"Hay {len(pendientes_soporte)} consulta(s) sin leer.")
+            if not mensajes:
+                st.info("Aún no hay consultas de soporte.")
+            for mensaje in mensajes:
+                with st.expander(
+                    f"{mensaje.get('asunto', 'Soporte')} · {mensaje.get('fecha', '')}"
                 ):
-                    mensaje["leido"] = True
-                    guardar_local_json(st.session_state.db_expedientes)
-                    st.rerun()
+                    st.write(f"**De:** {mensaje.get('remitente', '')}")
+                    st.write(mensaje.get("mensaje", ""))
+                    if not mensaje.get("leido") and st.button(
+                        "Marcar como leída",
+                        key=f"read_support_{mensaje.get('id')}",
+                    ):
+                        if marcar_mensaje_soporte_leido(mensaje.get("id")):
+                            st.success("Mensaje actualizado en el buzón compartido.")
+                            st.rerun()
         pendientes = obtener_usuarios_pendientes()
         st.subheader("Cuentas por aprobar")
         if pendientes:
@@ -7843,15 +8117,30 @@ elif st.session_state.navegacion == "Gestión de Permisos" and es_super_admin:
         st.rerun()
 
     st.header("Administración de Usuarios y Permisos")
-    if st.session_state.get("supabase_access_token"):
-        sincronizar_perfiles_remotos()
+    perfiles_compartidos_disponibles = True
+    if st.session_state.get("supabase_access_token") or _administrador_web_actual():
+        perfiles_compartidos_disponibles = sincronizar_perfiles_remotos()
     elif supabase_configurado():
         st.warning(
             "Esta sesión no tiene un token de Supabase. "
             "Inicia sesión con la cuenta local vinculada para cargar y guardar usuarios remotos."
         )
+        perfiles_compartidos_disponibles = False
 
-    for email, uinfo in list(st.session_state.usuarios.items()):
+    if not perfiles_compartidos_disponibles and (
+        supabase_configurado() or _administrador_web_actual()
+    ):
+        st.error(
+            "No se cargaron los perfiles centrales. No se mostrarán ni modificarán "
+            "permisos desde una caché local desactualizada."
+        )
+
+    perfiles_a_mostrar = (
+        list(st.session_state.usuarios.items())
+        if perfiles_compartidos_disponibles
+        else []
+    )
+    for email, uinfo in perfiles_a_mostrar:
         with st.expander(f"{uinfo['alias']} ({email}) - Rol: {uinfo.get('rol')}"):
             with st.form(key=f"form_perm_sys_{email}"):
                 c_a1, c_a2 = st.columns(2)
@@ -7875,13 +8164,15 @@ elif st.session_state.navegacion == "Gestión de Permisos" and es_super_admin:
                     st.warning("Este usuario tiene una solicitud de descarga pendiente.")
 
                 if st.form_submit_button("Guardar Permiso"):
-                    remote_saved = supabase_actualizar_perfil(
-                        st.session_state.get("supabase_access_token"),
+                    remote_saved = actualizar_perfil_compartido(
                         email,
                         nuevo_rol,
                         nuevo_estado,
+                        permiso_descarga,
                     )
-                    if not remote_saved and supabase_configurado():
+                    if not remote_saved and (
+                        supabase_configurado() or _administrador_web_actual()
+                    ):
                         st.error("No se guardaron los permisos: Supabase no autorizó el cambio.")
                         continue
                     st.session_state.usuarios[email]["rol"] = nuevo_rol
@@ -7916,7 +8207,14 @@ elif st.session_state.navegacion == "Gestión de Permisos" and es_super_admin:
                                 f"Estado: {nuevo_estado}; rol: {nuevo_rol}."
                             ),
                         )
-                    st.success("Permisos guardados en Supabase y en la caché local.")
+                    st.success(
+                        "Permisos guardados en "
+                        + (
+                            "el espacio compartido y la caché local."
+                            if remote_saved
+                            else "la caché local; no hay conexión central configurada."
+                        )
+                    )
                     st.rerun()
 
 elif st.session_state.navegacion == "Mi Perfil":
@@ -7942,11 +8240,17 @@ elif st.session_state.navegacion == "Mi Perfil":
         if solicitud_descarga_pendiente(datos_usuario):
             st.info("Tu solicitud de descarga está pendiente de aprobación.")
         elif st.button("Solicitar permiso para descargar documentos"):
-            datos_usuario["solicitud_descarga"] = True
-            st.session_state.usuarios[correo_activo] = datos_usuario
-            guardar_local_json(st.session_state.db_expedientes)
-            st.success("Solicitud enviada al Super Administrador.")
-            st.rerun()
+            enviada = (
+                solicitar_permiso_descarga_compartido(correo_activo)
+                if supabase_configurado()
+                else True
+            )
+            if enviada:
+                datos_usuario["solicitud_descarga"] = True
+                st.session_state.usuarios[correo_activo] = datos_usuario
+                guardar_local_json(st.session_state.db_expedientes)
+                st.success("Solicitud enviada al Super Administrador.")
+                st.rerun()
 
     if st.button("Cerrar Sesión del Sistema", width="stretch"):
         cerrar_sesion()

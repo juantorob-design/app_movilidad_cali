@@ -1,0 +1,46 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    SISTEMA_WEB_MODE=1 \
+    SISTEMA_DATA_DIR=/data \
+    SISTEMA_GOOGLE_TOKEN_FILE=/run/secrets/google-token.json \
+    SISTEMA_GOOGLE_CREDENTIALS=/run/secrets/google-client.json \
+    HOME=/tmp/app-home \
+    STREAMLIT_CONFIG_DIR=/tmp/app-home/.streamlit
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+        libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid app --create-home --shell /usr/sbin/nologin app \
+    && mkdir -p /tmp/app-home/.streamlit \
+    && chown -R app:app /tmp/app-home
+
+WORKDIR /app
+COPY requirements-web.txt ./
+RUN pip install --upgrade pip \
+    && pip install -r requirements-web.txt
+
+COPY --chown=app:app . .
+RUN mkdir -p /data && chown app:app /data
+
+USER app
+EXPOSE 8501
+VOLUME ["/data"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3)" || exit 1
+
+CMD ["python", "-m", "streamlit", "run", "web_app.py", \
+     "--server.address=0.0.0.0", \
+     "--server.port=8501", \
+     "--server.enableCORS=false", \
+     "--server.enableXsrfProtection=true", \
+     "--server.maxUploadSize=200", \
+     "--browser.gatherUsageStats=false", \
+     "--global.developmentMode=false"]

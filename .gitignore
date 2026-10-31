@@ -46,4 +46,7 @@ android_app/local.properties
 android_app/app/build/
 android_app/*.jks
 android_app/*.keystore
+android_app/*.p12
+android_app/*.png
+android_app/*.jpg
 deploy/pwa/config.js

@@ -1,0 +1,56 @@
+name: Deploy static PWA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deploy/pwa/**"
+      - ".github/workflows/deploy-pwa.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Add public Supabase client configuration
+        env:
+          SUPABASE_URL: ${{ vars.SISTEMA_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ vars.SISTEMA_SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "::error::Set SISTEMA_SUPABASE_URL and SISTEMA_SUPABASE_ANON_KEY as repository variables."
+            exit 1
+          fi
+          case "$SUPABASE_URL" in
+            https://*.supabase.co) ;;
+            *) echo "::error::SISTEMA_SUPABASE_URL must be an HTTPS Supabase project URL."; exit 1 ;;
+          esac
+          configuration="$(jq -cn --arg url "$SUPABASE_URL" --arg key "$SUPABASE_ANON_KEY" '{supabaseUrl:$url,supabaseAnonKey:$key}')"
+          printf 'window.SISTEMA_CONFIG = %s;\n' "$configuration" > deploy/pwa/config.js
+
+      - name: Upload static site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: deploy/pwa
+
+      - name: Publish GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

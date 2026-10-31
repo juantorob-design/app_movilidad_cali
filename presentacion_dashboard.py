@@ -51,14 +51,19 @@ st.info(
 )
 
 metricas = [
-    ("Versión operativa", "1.1.12"),
+    ("Versión escritorio declarada", "1.1.28"),
+    ("APK Android", "0.1.5 / code 6 firmada e instalada; acceso Google y resumen autenticado probados en BlueStacks"),
     ("Columnas de BD_DESV", 21),
     ("Desenlaces válidos", 3),
-    ("Formatos de entrada", 4),
+    ("Pruebas automatizadas", "148 pasaron"),
 ]
-cols = st.columns(4)
-for col, (label, value) in zip(cols, metricas):
-    col.metric(label, value)
+with st.container(horizontal=True):
+    for label, value in metricas:
+        st.metric(label, value, border=True)
+st.caption(
+    "Corte: 31 de octubre de 2026. La versión declarada no confirma por sí sola "
+    "que el instalador esté publicado o actualizado en todos los equipos."
+)
 
 tab_resumen, tab_capacitacion, tab_flujo, tab_trabajo, tab_validacion, tab_galeria = st.tabs(
     ["Resumen", "Capacitación", "Flujo de trabajo", "Trabajo realizado", "Validación", "Galería"]
@@ -91,8 +96,9 @@ with tab_resumen:
         st.success("Distribución controlada por roles")
         st.success("Complementos sin vincular visibles y reubicables")
 
-    st.subheader("Qué cambió en la versión 1.1.12")
+    st.subheader("Capacidades vigentes del sistema")
     st.markdown(
+        "- Escritorio 1.1.28; Android 0.1.5 (versionCode 6) corregida, firmada e instalada en BlueStacks; acceso y resumen probados; IA local pendiente.\n"
         "- OCR local de PDFs con caché persistente y selección DirectML/CPU.\n"
         "- Detección, clasificación y separación de Solicitud, Resolución, Notificación, Recurso, Desistimiento y Constancia.\n"
         "- Visor PDF integrado, copias locales, foliación y barra de progreso.\n"
@@ -103,6 +109,17 @@ with tab_resumen:
         "- Consulta unificada por radicado, placa, empresa, NIT, cédula, ubicación física y fecha.\n"
         "- Roles, permisos de descarga, auditoría, deduplicación y actualizador autorizado desde GitHub.\n"
         "- Editor PDF local para unir, dividir, extraer, ordenar y rotar documentos."
+    )
+    st.subheader("Alcance móvil")
+    st.markdown(
+        "La APK permite seleccionar la petición principal en PDF o imagen y "
+        "enviarla a la API para OCR y separación documental. Además, el código "
+        "integra IA local Qwen2.5-VL 3B para analizar hasta cinco páginas y "
+        "proponer radicado, placa y fecha sin sobrescribir campos escritos. "
+        "La primera descarga requiere ~2,93 GB, conexión y teléfono con al menos "
+        "6 GB de RAM. Debug y Release compilaron; la prueba de inferencia en dispositivo sigue "
+        "pendiente. El complemento sin expediente es un flujo independiente; "
+        "la PWA gratuita actual no procesa expedientes ni PDF."
     )
 
 with tab_capacitacion:
@@ -121,8 +138,8 @@ with tab_capacitacion:
         #### 3. Regla documental principal
         El año de Drive siempre sale de la fecha de creación de la petición. Un
         anexo puede llegar sin fecha propia: si el expediente existe, reutiliza la
-        fecha guardada; si todavía no existe, queda en `Peticion/Por_vincular`
-        identificado por placa hasta localizar el expediente principal.
+        fecha guardada; si todavía no existe, queda en
+        `Pendientes/Por_vincular/PLACA` hasta localizar el expediente principal.
 
         #### 4. Revisión de resultados
         Confirme el checklist de Solicitud, Recurso, Resolución, Notificación,
@@ -168,13 +185,14 @@ with tab_capacitacion:
 with tab_flujo:
     st.subheader("Flujo funcional para explicar en la exposición")
     pasos = [
-        ("1. Capturar", "Se cargan PDF, PNG, JPG o JPEG."),
-        ("2. Leer y revisar", "Se extraen datos, se muestra el visor y el destino previsto."),
-        ("3. Clasificar", "Se identifica recurso, sin recurso o desistimiento."),
-        ("4. Validar", "El checklist muestra documentos presentes y faltantes."),
-        ("5. Organizar", "Drive guarda por año o en Por_vincular y genera el PDF unificado."),
-        ("6. Sincronizar", "Sheets conserva los campos completos y sus enlaces."),
-        ("7. Consultar", "El expediente y los complementos por vincular se buscan por radicado, placa, empresa, NIT, cédula, ubicación o fecha."),
+        ("1. Solicitud", "Inicia el análisis desde la petición y su fecha; extrae radicado, placa y datos disponibles."),
+        ("2. Consulta QX", "Verifica la propiedad del vehículo antes de evaluar la actuación administrativa."),
+        ("3. Resolución o requerimiento", "Si existe resolución, continúa con citación. Si solo existe requerimiento, también continúa con citación. Si no existe ninguno, revisa si hay desistimiento."),
+        ("4. Citaciones", "Identifica y separa los oficios dirigidos a la empresa y al propietario."),
+        ("5. Comunicación", "Distingue notificación personal, por aviso o por publicación web."),
+        ("6. Recurso", "Si existe, procesa recurso, resolución del recurso, citación y notificación del recurso."),
+        ("7. Cierre", "Registra constancia de ejecutoria y remisión a registro cuando correspondan."),
+        ("8. Clasificar y guardar", "Usa solo Con recurso, Sin recurso o Desistimiento; separa bloques y conserva el PDF completo y la trazabilidad."),
     ]
     for title, description in pasos:
         st.markdown(
@@ -193,49 +211,59 @@ with tab_flujo:
     st.dataframe(integraciones, width="stretch", hide_index=True)
 
 with tab_validacion:
-    st.subheader("Pruebas de cierre")
+    st.subheader("Estado de validación al 31 de octubre de 2026")
     validaciones = [
-    ("Google Sheets", "Lectura, escritura, actualización y limpieza de fila temporal", "APROBADA"),
-    ("Google Drive", "Conexión con la carpeta principal y lectura de estructura", "APROBADA"),
-    ("Duplicados", "Comparación por nombre y huella de contenido", "APROBADA"),
-    ("Clasificación anual", "Año obtenido exclusivamente de la fecha de petición", "APROBADA"),
-    ("Aplicación", "Compilación y estado HTTP de Streamlit", "APROBADA"),
-    ("Gmail", "Permiso gmail.send en el token actual", "PENDIENTE DE AUTORIZACIÓN"),
+        ("Suite automatizada", "158 pruebas Python pasaron en local", "APROBADA"),
+        ("API Render", "OpenAPI 0.1.0; /health respondió 200; lista protegida sin token devolvió 401", "DISPONIBLE; AUTENTICACIÓN REQUERIDA"),
+        ("Build Android", "0.1.5/code 6 Debug y Release compiladas; lintDebug y lintVitalRelease pasaron; firma v2 verificada", "BUILD Y FIRMA APROBADOS"),
+        ("Inicio Android", "APK Release instalada y abierta en el AVD dedicado hasta acceso Google; sin excepción fatal", "SMOKE TEST APROBADO"),
+        ("Búsqueda por ubicación", "No se confirmó la búsqueda con la Release corregida; no se usaron datos de expedientes como consulta de prueba", "PENDIENTE DE VALIDACIÓN"),
+        ("Estado del archivo compartido", "Retest histórico de BlueStacks: 2 expedientes, 0 completos, 2 con faltantes y 2 documentos registrados", "LECTURA HISTÓRICA APROBADA"),
+        ("IA en Android", "Qwen2.5-VL 3B; modelo de ~2,93 GB; no se descargó ni se probó inferencia en un teléfono", "PENDIENTE DE VALIDACIÓN EN TELÉFONO"),
+        ("PDF de ejemplo", "87 páginas; OCR en 66, 25 bloques, Con recurso, 14 campos; 468,7 s", "PROCESADO LOCALMENTE"),
+        ("Carga larga", "La API entrega un trabajo asíncrono y Android consulta avance por página", "PRUEBAS LOCALES APROBADAS"),
+        ("Drive y Sheets", "No se cargaron archivos ni se escribieron datos en esta validación", "SIN ESCRITURAS; E2E PENDIENTE"),
+        ("OAuth móvil", "ID token y lecturas OK; Release actualizada con Bearer en la consulta del trabajo OCR", "LECTURA APROBADA; E2E PENDIENTE"),
+        ("Gmail", "Permiso gmail.send en el token actual", "PENDIENTE DE AUTORIZACIÓN"),
     ]
     st.dataframe(
-    pd.DataFrame(validaciones, columns=["Área", "Comprobación", "Resultado"]),
-    width="stretch",
-    hide_index=True,
+        pd.DataFrame(validaciones, columns=["Área", "Comprobación", "Resultado"]),
+        width="stretch",
+        hide_index=True,
+    )
+    st.warning(
+        "La carga de prueba en BlueStacks no quedó confirmada: el servidor "
+        "reportó el trabajo previo aún en proceso y no se reenvió el archivo. "
+        "No se confirmó escritura en Drive ni Sheets; verificar el estado antes "
+        "de cualquier reintento."
     )
     st.info(
-    "El correo de alertas queda activo después de pulsar "
-    "«Actualizar autorización para notificaciones» y aceptar el permiso de Gmail."
+        "En la validación del 31 de octubre, la Release 0.1.5/code 6 se instaló "
+        "y abrió en el AVD dedicado hasta la pantalla de acceso Google, sin "
+        "excepción fatal; no se autenticó ni se realizaron escrituras. El "
+        "retest histórico de BlueStacks sí completó OAuth y mostró 2 "
+        "expedientes, 0 completos, 2 con faltantes y 2 documentos registrados. "
+        "La búsqueda por ubicación sigue sin validación con la Release corregida. "
+        "Render /health respondió 200 y las rutas protegidas sin token "
+        "respondieron 401. No se repitió la carga del PDF y la IA no se ejecutó."
+    )
+    st.info(
+        "Las validaciones históricas contra Google Drive/Sheets no se repitieron "
+        "en este corte. El correo de alertas requiere autorizar gmail.send."
     )
 
 with tab_trabajo:
     st.subheader("Trabajo realizado")
-    trabajo = [
-        "Corrección del cargador de archivos y navegación del escritorio.",
-        "Autenticación local, Google OAuth y persistencia segura del token.",
-        "Roles Visualizador, Modificador, Administrador y Super Administrador.",
-        "Lectura inteligente de PDF y detección de campos.",
-        "Conversión de imágenes a PDF.",
-        "Separación heurística, clasificación y unión ordenada de expedientes.",
-        "Prevención de duplicados mediante nombre y huella de contenido.",
-        "Checklist por proceso y estado documental visible.",
-        "Resumen y visor integrado antes de guardar cada carga.",
-        "Bandeja de pendientes y asociación posterior por radicado o placa.",
-        "Integración de BD_DESV y DATOS con las 21 columnas reales.",
-        "Preservación de datos históricos al anexar documentos.",
-        "Instalador Windows con PyInstaller e Inno Setup.",
-        "Actualizador autorizado desde GitHub Raw y release 1.1.12.",
-        "Pruebas de sintaxis, dependencias, servidor, ejecutable e instalador.",
-        "Prueba real de Google Sheets: escritura, lectura, actualización y eliminación controlada.",
-        "Corrección de escritura por fila exacta para evitar desplazamientos de columnas.",
-        "Verificación de Drive y retiro del Sheet antiguo de la configuración activa.",
-    ]
-    for item in trabajo:
-        st.checkbox(item, value=True, disabled=True)
+    st.markdown(
+        "- Escritorio Windows con registro, búsqueda, archivo, permisos y dashboard operativo.\n"
+        "- Carga Android de petición principal PDF/foto, complementos, OCR y separación por bloques; IA local Qwen2.5-VL integrada en el código para prellenar radicado, placa y fecha desde hasta cinco páginas. Debug compiló; falta validar inferencia física.\n"
+        "- API móvil y escritorio comparten motor OCR, reglas de extracción y clasificación; Android completa campos vacíos, refresca el expediente y consulta trabajos OCR asíncronos con progreso.\n"
+        "- API con integración a Google Drive/Sheets y autorización centralizada.\n"
+        "- Clasificación permitida: Con recurso, Sin recurso o Desistimiento.\n"
+        "- Escritorio declarado 1.1.28; Android 0.1.5 (versionCode 6) corregida, firmada e instalada en BlueStacks; autenticación y resumen aprobados; IA local pendiente.\n"
+        "- Render desplegó 04594d8 y responde 200 en /health. La corrección del helper permitió consultar el resumen autenticado; la búsqueda por ubicación aún no se valida con la Release corregida.\n"
+        "- Suite Python: 158 pruebas pasaron. Build Debug/Release, lintDebug y lintVitalRelease terminaron; no hay tests unitarios Kotlin. No se confirmó carga ni escritura de datos de prueba."
+    )
     with open(os.path.join(ROOT, "docs", "INFORME_APLICACION.md"), "rb") as informe:
         informe_data = informe.read()
     st.download_button(
@@ -258,4 +286,4 @@ with tab_galeria:
     for filename, caption in imagenes:
         path = os.path.join(SCREENSHOTS, filename)
         if os.path.exists(path):
-            st.image(path, caption=caption, use_container_width=True)
+            st.image(path, caption=caption, width="stretch")

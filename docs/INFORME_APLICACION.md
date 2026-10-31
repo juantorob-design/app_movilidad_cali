@@ -1,15 +1,46 @@
 # Informe de la aplicación: Sistema de Desvinculaciones
 
+**Corte de estado: 31 de octubre de 2026.**
+
 ## 1. Resumen ejecutivo
 
-El Sistema de Desvinculaciones es una aplicación de escritorio para registrar,
-organizar, consultar y conservar expedientes administrativos de desvinculación.
-Integra una interfaz Streamlit dentro de un ejecutable Windows, almacenamiento
-local de respaldo, Google Drive para los documentos y Google Sheets para los
-metadatos colaborativos.
+El Sistema de Desvinculaciones integra la aplicación de escritorio Windows, un
+cliente Android con API móvil y una versión web en desarrollo para registrar,
+organizar, consultar y conservar expedientes administrativos. Google Drive
+almacena los documentos y Google Sheets mantiene los metadatos operativos; la
+API móvil mantiene las credenciales de Google en el servidor y no en el teléfono.
 
-Su objetivo principal es reemplazar procesos dispersos de carga, búsqueda y
-seguimiento por un flujo único, trazable y controlado por roles.
+La versión de escritorio declarada en `version.json` es 1.1.28. Se generó una
+distribución PyInstaller aislada que incluye el ejecutable de escritorio y
+`EditorPDFLocal`; no se publicó ni se instaló sobre la distribución existente.
+La distribución Android general aún corresponde a la 0.1.3 (versionCode 4).
+La Release corregida 0.1.5 (versionCode 6), firmada con la clave de publicación
+existente y configurada con la URL real de Render, pasó la verificación de
+firma y se instaló en BlueStacks Pie64 con `adb install -r`, conservando sus
+datos. La app abrió sin crash. El arreglo sustituye el
+encabezado de autorización literal del helper `workspaceRequest` por el token
+de la sesión. Tras actualizar la app se repitió el acceso Google y, en el retest
+posterior, el resumen autenticado cargó correctamente: 2 expedientes, 0 completos,
+2 con faltantes y 2 documentos registrados. La búsqueda por ubicación no quedó
+confirmada con esta Release; no se usó un dato de expediente para completar esa
+prueba. Render respondió `/health` 200 y las rutas protegidas consultadas sin
+token devolvieron 401, como se espera. No se probó en un teléfono físico.
+
+La compilación Release firmada, instalación, autenticación y lectura del resumen
+quedaron completadas. La carga del PDF de prueba no quedó confirmada: el servidor
+reportó un trabajo anterior en proceso y no se envió una segunda copia. No se
+confirmó escritura en Drive ni Sheets. El PDF de ejemplo de 87 páginas sí se
+procesó localmente contra la API móvil; esto no fue una carga desde Android ni
+una prueba de persistencia remota.
+
+En la validación incremental del 31 de octubre, las 158 pruebas Python pasaron;
+Debug y Release compilaron, `lintDebug` terminó correctamente y se verificó la
+firma v2 del APK Release (0.1.5/code 6). Se instaló y abrió en el AVD dedicado
+de pruebas hasta la pantalla de acceso Google, sin excepción fatal. Render
+`/health` respondió 200; OpenAPI 0.1.0 incluyó las rutas esperadas de resumen,
+expedientes y espacio compartido, y la lista de expedientes sin token respondió
+401. Esta comprobación no autenticó una cuenta, no cargó archivos ni escribió
+en Drive o Sheets. No hay pruebas unitarias Kotlin.
 
 ## 2. Problema que resuelve
 
@@ -31,7 +62,7 @@ del expediente desde la carga hasta la consulta.
 
 ### 3.1 Escritorio y dashboard
 
-El inicio presenta un escritorio visual con accesos a:
+El inicio operativo presenta un escritorio visual con accesos a:
 
 - Registro de Entrada.
 - Buscador y Archivo.
@@ -43,7 +74,8 @@ El inicio presenta un escritorio visual con accesos a:
 
 El dashboard ejecutivo muestra expedientes gestionados, completitud documental,
 documentos registrados, expedientes con faltantes, conexión con Google y
-distribución de desenlaces.
+distribución de desenlaces. Los indicadores de archivo usan el cálculo común
+basado en Google Sheets descrito en la sección Android/API.
 
 ### 3.2 Registro de expedientes
 
@@ -92,6 +124,13 @@ El checklist documental distingue los tres desenlaces:
 - **Sin recurso:** Solicitud, Resolución, Notificación y Constancia de ejecutoria.
 - **Con recurso:** Solicitud, Recurso, Resolución y Notificación.
 - **Desistimiento:** Solicitud y Desistimiento.
+
+El análisis prioriza la secuencia administrativa: solicitud, consulta QX,
+resolución o requerimiento, citaciones a empresa y propietario, comunicación,
+actuaciones del recurso cuando aplique, constancia de ejecutoria y remisión a
+registro. Si no hay resolución ni requerimiento, se verifica desistimiento.
+Las páginas de continuación heredan el tipo del bloque anterior cuando no hay
+evidencia suficiente, y los documentos ajenos al flujo quedan como `Otro`.
 
 ### 3.5 Google Drive
 
@@ -144,6 +183,79 @@ se conserva en la bandeja de pendientes sin inventar un año documental.
 
 El dashboard de capacitación es independiente, se abre con `abrir_presentacion.ps1`
 en el puerto 8510 y no forma parte del ejecutable operativo.
+
+### 3.10 Android, API móvil y web
+
+La aplicación Android permite iniciar sesión, consultar y editar campos
+operativos autorizados, crear expedientes con una petición principal obligatoria
+y cargar PDF o imágenes PNG/JPG. La API móvil convierte imágenes a PDF, ejecuta
+OCR y separación documental, conserva el archivo completo y guarda bloques
+clasificados en Drive. El cliente también admite complementos sin expediente,
+que se almacenan en `Pendientes/Por_vincular/PLACA/`.
+
+La API móvil comparte con escritorio el motor RapidOCR, la escala de renderizado
+OCR y el extractor de campos. También reutiliza las reglas de clasificación para
+corregir encabezados OCR compactos. Los datos detectados completan únicamente
+campos vacíos del expediente; los valores confirmados no se sobrescriben y los
+campos sin columna disponible se informan. Tras cargar, Android muestra los
+campos guardados o pendientes y vuelve a consultar el expediente. La carga
+Android usa un trabajo asíncrono y consulta el avance por página para que la
+respuesta HTTP inicial no tenga que esperar a que termine el OCR. La cola admite
+una carga activa por instancia; su estado es temporal en memoria y se pierde si
+la instancia de la API se reinicia.
+
+El escritorio y Android leen la misma hoja operacional de Google Sheets. El
+resumen «Estado del archivo» usa ahora un cálculo Python compartido para los
+dos clientes y un endpoint autenticado de la API: cuenta radicados únicos,
+completitud según los campos administrativos requeridos, expedientes con
+documentos faltantes y documentos descritos en Sheets. El escritorio actualiza
+los indicadores al iniciar y mediante «Actualizar estado desde Google Sheets»;
+Android los carga al iniciar sesión y los vuelve a consultar al actualizar,
+crear, editar o procesar un expediente. Si la lectura falla, se muestra «No
+disponible»/un error y no se presentan cifras antiguas de la caché como si
+fueran actuales. Los documentos contados son los metadatos registrados en Sheets,
+no una enumeración en tiempo real de cada archivo Drive.
+
+El escritorio usa Ollama local en Windows. Android incorpora ahora una ruta de
+inferencia completamente local con Llamatik/llama.cpp y Qwen2.5-VL 3B
+cuantizado Q3_K_M, más su proyector visual coincidente. La primera descarga
+requiere aproximadamente 2,93 GB y se valida con SHA-256 antes de instalarse en
+el almacenamiento privado de la app. El usuario puede cancelar la descarga o el
+análisis. La IA analiza hasta cinco páginas de la petición principal y propone
+radicado, placa y fecha; solo llena campos vacíos para no reemplazar valores
+confirmados. El OCR y el procesamiento documental completos siguen pasando por
+la API cuando se guarda el expediente. Esta integración aún requiere validar la
+compilación final y probar inferencia real en un teléfono de al menos 6 GB de
+RAM. No equivale todavía a toda la IA ni a todas las funciones del escritorio.
+El runtime Llamatik tiene licencia MIT; los pesos derivan de
+[Qwen2.5-VL](https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct/blob/main/LICENSE)
+y mantienen la licencia del modelo original. La app descarga ambos archivos
+desde el [repositorio GGUF](https://huggingface.co/mradermacher/Qwen2.5-VL-3B-Instruct-GGUF)
+y no los incluye en el APK.
+
+En la revisión de paridad con escritorio se alinearon permisos de accesos
+directos a Drive/Sheets y de gestión de perfiles, se añadió la ubicación física
+a la búsqueda móvil y se habilitó abrir desde la APK el enlace Drive de cada
+documento. Se retiró la falsa vista «Base Histórica»: en escritorio esta función
+lee un Excel externo configurado localmente, fuente que la API móvil no tiene
+disponible. La importación histórica, el editor PDF local, la carga en lote de
+varios archivos y la vista previa/descarga controlada de documentos siguen
+siendo funciones de escritorio no equivalentes en Android.
+
+En una comprobación anterior en BlueStacks, OAuth cargó los dos expedientes
+operativos; el detalle y la lista documental de Drive funcionaron, y el enlace
+abrió el PDF en Google Drive. En ese momento, la búsqueda por ubicación física
+no encontró el expediente aunque su detalle sí mostraba la ubicación: la APK
+consultaba Render en `ed57989` y la respuesta resumida publicada no incluía ese
+campo. Aunque el código local ya lo incorporaba, esa versión de la API aún no
+estaba desplegada. El retest posterior de la Release 0.1.5 confirmó OAuth y el
+resumen autenticado, pero no volvió a confirmar la búsqueda por ubicación. No se
+volvió a enviar el PDF ni se modificaron datos de Drive o Sheets en estas pruebas.
+
+Las pruebas automatizadas cubren conversión, clasificación, trazabilidad,
+extracción compartida, caché OCR y operaciones de Drive/Sheets simuladas. No
+equivalen a una escritura real con el PDF de ejemplo. El modo web reutiliza la
+aplicación Streamlit; la PWA alojada gratuita aún no procesa expedientes ni PDF.
 
 ## 4. Modelo de datos de Sheets
 
@@ -213,9 +325,11 @@ instalador de Inno Setup para Windows de 64 bits. El actualizador consulta
 `version.json` en GitHub Raw y, si encuentra una versión superior, descarga el
 instalador correspondiente.
 
-La versión preparada para publicación es la 1.1.12:
+La versión declarada actualmente en el repositorio es la 1.1.28. El historial
+de esa versión está en [RELEASE_NOTES_1.1.28.md](../RELEASE_NOTES_1.1.28.md).
 
-<https://github.com/juantorob-design/app_movilidad_cali/releases/tag/v1.1.12>
+La versión del archivo no confirma por sí sola que el instalador se haya
+publicado o instalado en todos los equipos.
 
 Cuando existe una versión superior, la aplicación muestra un aviso con los
 botones **Actualizar ahora** y **Más tarde**. La descarga solo inicia después
@@ -238,21 +352,51 @@ Para mostrar la aplicación en una reunión:
 
 ## 8. Validación de cierre
 
-Se realizaron pruebas controladas contra los servicios reales:
+- Suite Python: **148 pruebas pasadas**.
+- Escritorio: el bundle PyInstaller se generó en un destino aislado; contiene
+  `SistemaDesvinculaciones.exe` y el programa `EditorPDFLocal`. El instalador no
+  se publicó y no se reemplazó la distribución instalada.
+- Android: la versión 0.1.5 (versionCode 6) compila con Android Gradle Plugin
+  8.13.2, Gradle 8.13 y compileSdk 36. Tras corregir el encabezado de
+  `workspaceRequest`, `:app:testDebugUnitTest`, `:app:assembleDebug`,
+  `:app:assembleRelease` y `:app:lintVitalRelease` terminaron correctamente; no
+  hay pruebas unitarias Kotlin. La firma v2 de la Release se verificó y la APK
+  corregida se instaló sobre la existente en BlueStacks sin borrar sus datos.
+- IA móvil: repositorio del modelo fijado a una revisión concreta; se verificaron
+  los tamaños y SHA-256 publicados para configurar el descargador. No se
+  descargaron los GGUF ni se comprobó inferencia. El emulador usado tiene
+  2,5 GB de RAM (menos que los 6 GB recomendados para el dispositivo objetivo).
+  Modelo Q3_K_M y proyector: ~2,93 GB en total.
+- API Render: el commit `04594d8` se desplegó manualmente. En la verificación
+  actual `/health` respondió 200; OpenAPI 0.1.0 expone 15 rutas, incluida
+  `GET /api/v1/archivo/resumen`, protegida por autenticación Bearer. Las rutas
+  protegidas devuelven 401 cuando se consultan sin token, según lo esperado.
+- Emulador Android: instalación de Release 0.1.5/code 6 y apertura de
+  `MainActivity` aprobadas, sin excepción fatal en Logcat. La app llegó a la
+  pantalla de acceso Google. No se autenticó ni se probaron listas, formularios
+  o carga porque Render estaba respondiendo 502. No había teléfono físico
+  conectado.
+- BlueStacks: la Release corregida 0.1.5 se instaló y abrió sin crash. La
+  autenticación que había funcionado en la instalación anterior tuvo que
+  repetirse tras actualizar; el selector Google se abrió, pero la app volvió a
+  quedar en la pantalla de acceso. No se validaron el resumen autenticado ni la
+  búsqueda por ubicación con el arreglo instalado en ese primer intento.
+- Retest posterior en BlueStacks: se completó Google OAuth y el resumen
+  autenticado mostró 2 expedientes, 0 completos, 2 con faltantes y 2 documentos
+  registrados. La búsqueda por ubicación no se confirmó en esta Release.
+- PDF de ejemplo (87 páginas, ~8,1 MB): la API local lo procesó en 468,7 s; 66
+  páginas pasaron por OCR, produjo 25 bloques, clasificó `Con recurso` y
+  detectó 14 campos. No se comparó página por página contra escritorio ni se
+  guardó el resultado en Drive/Sheets.
+- No se volvió a enviar el PDF ni se escribieron datos de prueba en servicios
+  productivos. El último trabajo remoto seguía reportado en proceso y una
+  consulta de Drive devolvió HTTP 502; confirmar ese trabajo antes de reintentar.
+- La paridad funcional total sigue pendiente: histórico Excel, editor PDF,
+  carga por lote, gestión documental completa y conversación IA no están
+  disponibles en Android.
 
-- Google Sheets: lectura de pestañas, escritura de una fila temporal, lectura de
-  retorno, actualización de una celda y limpieza final.
-- Google Drive: lectura de la carpeta principal y comprobación de su estructura,
-  sin conservar archivos de prueba.
-- Aplicación: compilación Python, revisión de formato y respuesta HTTP 200 de
-  Streamlit.
-- Duplicados: verificación por nombre y huella de contenido antes de subir.
-- Clasificación anual: validación para que solo la fecha de petición determine el
-  año.
-
-La fila temporal usada para la prueba de Sheets fue eliminada y no quedaron
-marcadores de prueba en la hoja. El permiso Gmail `gmail.send` debe autorizarse
-en cada equipo para activar los correos de emergencia.
+El permiso Gmail `gmail.send` debe autorizarse en cada equipo para activar los
+correos de emergencia.
 
 ## 9. Trabajo realizado
 
@@ -276,13 +420,30 @@ Durante el desarrollo se corrigieron y consolidaron:
 - resumen, visor integrado y checklist documental por proceso;
 - bandeja de pendientes con asociación posterior por radicado o placa;
 - documentación y galería de presentación.
-- guion de capacitación independiente y constancia de pruebas reales.
+- guion de capacitación independiente;
+- API móvil y soporte de carga de PDF e imágenes desde Android;
+- separación OCR por bloques, guardado del PDF original y trazabilidad de
+  archivo de origen y páginas.
+- extractor de campos compartido por escritorio y API móvil, con guardado sin
+  sobrescribir los datos confirmados;
+- IA visual local Android integrada al registro: Qwen2.5-VL 3B, descarga
+  verificable y análisis de hasta cinco páginas para prellenar campos vacíos;
+- resumen común del estado del archivo desplegado en la API para consultar las
+  métricas calculadas desde Sheets.
 
 ## 10. Estado actual y recomendaciones
 
-La aplicación está compilada, instalada y publicada. La validación local del
-ejecutable y del servidor Streamlit fue exitosa. Como control operativo
-periódico se recomienda:
+La suite Python local tiene 158 pruebas pasadas. Las compilaciones Android
+Debug y Release 0.1.5 pasaron; `lintDebug` y `lintVitalRelease` terminaron y la
+firma v2 se verificó. El APK Release se instaló y abrió en el AVD de pruebas
+hasta el acceso Google, sin crash. El acceso autenticado y la lectura del
+resumen constan en el retest histórico de BlueStacks; no se repitió la
+autenticación en esta validación. Render responde `/health` 200, OpenAPI muestra
+las rutas usadas por Android y las rutas protegidas sin token devuelven 401.
+La búsqueda por ubicación no se confirmó con la Release corregida. No hay
+pruebas unitarias Kotlin. La IA local aún no se ejecutó en un teléfono. El
+resultado de la carga remota previa no quedó confirmado; no repetirla hasta
+comprobar su estado. Como control operativo periódico se recomienda:
 
 - realizar respaldos de la hoja y de la carpeta de Drive;
 - probar una actualización en un equipo de prueba antes de cambiar de versión;
@@ -292,3 +453,8 @@ periódico se recomienda:
   de Google.
 - autorizar Gmail desde el botón de actualización de notificaciones antes de
   depender de los correos de emergencia.
+- usar una copia o carpeta/hoja de pruebas antes de validar escritura real;
+- comparar el resultado del PDF de ejemplo con el escritorio y revisar
+  manualmente la secuencia administrativa.
+- volver a cargar solo si el trabajo no aparece como completado; un reinicio de
+  la instancia elimina los trabajos que siguen en memoria.

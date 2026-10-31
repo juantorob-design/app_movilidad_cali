@@ -19,8 +19,10 @@ contenedor.
    `/health` como comprobación y desactiva los despliegues automáticos.
 3. En la configuración de entorno del servicio, carga los valores solicitados
    por el Blueprint:
-   - `SISTEMA_GOOGLE_WEB_CLIENT_ID`: el ID de cliente web de OAuth usado por la
-     aplicación Android.
+   - `SISTEMA_GOOGLE_WEB_CLIENT_ID`: el cliente Web OAuth del proyecto
+     `sistema-desvinculaciones-cali`
+     (`1019857870350-ccrqd53kcl0c6k799f0om2p5fnloviij.apps.googleusercontent.com`),
+     que debe coincidir con la audiencia de los ID tokens de Android.
    - `SISTEMA_WEB_OWNER_EMAIL`: el correo propietario autorizado para Drive y
      Sheets.
    - `SISTEMA_SPREADSHEET_ID`: ID de la hoja operacional.
@@ -42,14 +44,22 @@ contenedor.
 Render asignará al servicio una URL HTTPS `https://...onrender.com`. Compila
 la APK indicando esa URL con la barra final:
 
+Desde `android_app`, compila el APK Release con la clave de distribución local
+configurada y protegida:
+
 ```powershell
-Set-Location android_app
-.\gradlew.bat assembleRelease `
-  -PAPI_BASE_URL=https://NOMBRE-DEL-SERVICIO.onrender.com/ `
-  -PGOOGLE_WEB_CLIENT_ID=ID_CLIENTE_WEB.apps.googleusercontent.com `
-  -PSISTEMA_SPREADSHEET_ID=ID_DE_LA_HOJA `
-  -PSISTEMA_DRIVE_FOLDER_ID=ID_DE_LA_CARPETA
+.\build_release.ps1 -ApiBaseUrl https://NOMBRE-DEL-SERVICIO.onrender.com/
 ```
+
+El wrapper usa el cliente Web OAuth del proyecto activo por defecto. Para
+sobrescribirlo explícitamente, pasa `-GoogleWebClientId` con el mismo valor
+configurado en `SISTEMA_GOOGLE_WEB_CLIENT_ID` en Render.
+
+No guardes la clave ni sus contraseñas en el repositorio. Mantén una copia
+protegida del archivo PKCS#12 en Drive privado y guarda su contraseña en un
+gestor de contraseñas independiente. El archivo PKCS#12 está cifrado con esa
+contraseña; para firmar desde otra instalación de Windows, restaura el archivo
+y vuelve a proteger la contraseña con el perfil de Windows de ese equipo.
 
 Al iniciar sesión, la APK llama `/health` antes de abrir Google Credential
 Manager. Esa petición despierta automáticamente la instancia gratuita si estaba

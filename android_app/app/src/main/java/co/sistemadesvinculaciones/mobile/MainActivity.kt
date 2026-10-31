@@ -686,7 +686,7 @@ class MainActivity : ComponentActivity() {
     ): JSONObject = withContext(Dispatchers.IO) {
         val requestBuilder = Request.Builder()
             .url("${BuildConfig.API_BASE_URL.trimEnd('/')}$path")
-            .header("Authorization", "******")
+            .header("Authorization", "Bearer $authToken")
         when (method) {
             "GET" -> requestBuilder.get()
             "POST" -> requestBuilder.post(

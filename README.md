@@ -3,6 +3,63 @@
 Aplicación de escritorio para gestionar expedientes de desvinculación administrativa,
 documentos digitalizados y sincronización con Google Drive y Google Sheets.
 
+## Migración web multiplataforma
+
+La versión web reutiliza el flujo actual de expedientes y se protege con el
+inicio de sesión OIDC de una única cuenta Google del propietario. El servidor
+usa el token Google del propietario para Drive/Sheets; los dispositivos móviles
+no reciben esas credenciales. El ejecutable de Windows sigue siendo
+independiente.
+
+Para probar el modo web en local, crea `.streamlit/secrets.toml` desde
+[`web-secrets.example.toml`](web-secrets.example.toml), configura un cliente
+Google OAuth de tipo Aplicación web y ejecuta:
+
+```powershell
+.\run_web.ps1
+```
+
+Para una URL HTTPS propia y una PWA instalable usa el despliegue Docker de
+[`docs/WEB_MULTIPLATAFORMA.md`](docs/WEB_MULTIPLATAFORMA.md). La imagen excluye
+tokens y datos; el servidor los monta desde archivos protegidos y conserva los
+registros en el volumen `web-data/`. Aún debe validarse el despliegue y la
+interfaz en teléfonos reales antes de usarla con expedientes.
+
+Para probar una alternativa alojada sin usar el computador y sin contratar un
+servidor, consulta [`docs/PWA_GRATUITA.md`](docs/PWA_GRATUITA.md). Esta primera
+PWA ofrece inicio de sesión, buzón y consulta de permisos con GitHub Pages y
+Supabase; todavía no procesa expedientes ni PDFs y no reemplaza la aplicación
+actual.
+
+## Aplicación Android nativa
+
+El cliente Android independiente está en [`android_app/`](android_app/), y la
+API está en [`mobile_api/`](mobile_api/). La APK permite iniciar sesión con
+Google, consultar y editar campos autorizados, registrar un expediente con su
+petición principal obligatoria en PDF o imagen, y cargar complementos pendientes.
+La API convierte imágenes a PDF, aplica OCR y separa bloques documentales antes
+de guardarlos en Drive. Comparte con escritorio el extractor de campos y las
+reglas OCR; las cargas largas se procesan como trabajos asíncronos con avance
+por página y el cliente actualiza el detalle al terminar. La API admite una
+carga activa a la vez y mantiene su estado de trabajo en memoria; un reinicio
+del servicio elimina los trabajos abiertos. La versión Android actual es 0.1.5
+(versionCode 6).
+
+Consulta [`android_app/README.md`](android_app/README.md) para compilar y probar
+en emulador o teléfono. Al 31 de octubre de 2026, las 158 pruebas Python pasan;
+Debug y Release compilan, `lintDebug` pasa y la Release firmada se verificó con
+firma v2. La Release se instaló y abrió en un AVD de pruebas hasta la pantalla
+de acceso, sin crash. Render `/health` respondió 200 y OpenAPI expone las rutas
+de resumen y expedientes; una consulta protegida sin token devolvió 401, como
+corresponde. Este smoke test no autentica una cuenta ni prueba escrituras en
+Drive o Sheets.
+
+La APK todavía no tiene paridad total con escritorio: la importación histórica
+Excel, el editor PDF, la carga por lotes, la vista previa/descarga documental y
+la inferencia IA en un teléfono físico no se validaron como equivalentes. No
+cargues documentos reales hasta contar con un destino de pruebas separado. El
+build Release exige una URL API HTTPS real y la firma local protegida.
+
 ## Ejecución en desarrollo
 
 ```powershell
@@ -99,7 +156,8 @@ El dashboard se abre en `http://127.0.0.1:8510`.
 El dashboard y el informe son materiales independientes para capacitación y
 exposición. Permanecen en la carpeta principal/documentación y no se incluyen en
 la compilación del programa operativo: `run_app.spec` solo empaqueta `run_app.py`,
-`app_6.py`, `updater.py`, imágenes y la configuración OAuth.
+`app_6.py`, `updater.py`, imágenes, configuración visual de Streamlit y la
+configuración OAuth. Nunca empaqueta `.streamlit/secrets.toml`.
 
 ## Compilación para Windows
 
