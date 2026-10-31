@@ -88,7 +88,7 @@ class TestMobileApiExpedientes(unittest.TestCase):
             _records_from_values(
                 [
                     ["RAD PADRE", "PLACA", "ES PRUEBA"],
-                    ["PRUEBA-001", "TST001", "SI"],
+                    ["PRUEBA-001", "TST001", "Sí"],
                 ]
             )
 

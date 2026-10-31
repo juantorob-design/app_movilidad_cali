@@ -187,7 +187,7 @@ def _records_from_values(values: list[list]) -> dict[str, dict]:
             continue
         placa = _record_value(row, positions, "PLACA").upper()
         es_registro_de_prueba = any(
-            _record_value(row, positions, column).upper()
+            normalizar_campo(_record_value(row, positions, column))
             in {"SI", "TRUE", "1", "YES", "PRUEBA", "DEMO", "TEST"}
             for column in DEMO_MARKER_COLUMNS
         )
