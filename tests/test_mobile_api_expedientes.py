@@ -73,12 +73,22 @@ class TestMobileApiExpedientes(unittest.TestCase):
         self.assertEqual(summary["nit_empresa"], "900123")
         self.assertEqual(summary["ubicacion"], "Caja 5")
 
-    def test_rejects_demo_rows_in_operational_sheet(self):
-        with self.assertRaisesRegex(RuntimeError, "Demo records"):
+    def test_accepts_real_records_with_test_like_identifiers(self):
+        records = _records_from_values(
+            [
+                ["RAD PADRE", "PLACA"],
+                ["PRUEBA-REAL-001", "TST123"],
+            ]
+        )
+
+        self.assertIn("PRUEBA-REAL-001", records)
+
+    def test_rejects_rows_explicitly_marked_as_demo(self):
+        with self.assertRaisesRegex(RuntimeError, "explicitly marked as test data"):
             _records_from_values(
                 [
-                    ["RAD PADRE", "PLACA"],
-                    ["PRUEBA-001", "TST001"],
+                    ["RAD PADRE", "PLACA", "ES PRUEBA"],
+                    ["PRUEBA-001", "TST001", "SI"],
                 ]
             )
 

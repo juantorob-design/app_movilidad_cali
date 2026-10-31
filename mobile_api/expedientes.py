@@ -21,6 +21,11 @@ DEFAULT_SPREADSHEET_ID = "1oQ5GnxSj4_gGA-p2NjlN3o0uDOLaIELZu4gpohLK6Uo"
 SPREADSHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 OWNER_INFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 SHEETS_API_URL = "https://sheets.googleapis.com/v4/spreadsheets"
+DEMO_MARKER_COLUMNS = (
+    "ES PRUEBA",
+    "REGISTRO DE PRUEBA",
+    "DATOS DE PRUEBA",
+)
 FIELDS_TO_SHEET_COLUMNS = {
     "radicado_padre": ("RAD PADRE", "RADICADO PADRE"),
     "fecha_solicitud": ("FECHA SOLICITUD", "FECHA"),
@@ -181,10 +186,15 @@ def _records_from_values(values: list[list]) -> dict[str, dict]:
         if not radicado:
             continue
         placa = _record_value(row, positions, "PLACA").upper()
-        if radicado.upper().startswith("PRUEBA-") or placa.startswith("TST"):
+        es_registro_de_prueba = any(
+            _record_value(row, positions, column).upper()
+            in {"SI", "TRUE", "1", "YES", "PRUEBA", "DEMO", "TEST"}
+            for column in DEMO_MARKER_COLUMNS
+        )
+        if es_registro_de_prueba:
             raise RuntimeError(
-                "Demo records were found in the Google worksheet; "
-                "remove them before using the mobile API."
+                "A record explicitly marked as test data was found in the "
+                "Google worksheet; remove it before using the mobile API."
             )
         records[radicado] = {
             "radicado_padre": radicado,
